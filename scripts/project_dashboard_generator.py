@@ -278,13 +278,28 @@ def resolve_entity_paths(vault: Path, names: Iterable[str]) -> list[dict[str, st
                 if norm and (norm in key or key in norm):
                     path = candidate
                     break
+        if path:
+            path = canonical_entity_path(path, by_norm)
         if path and str(path) not in seen:
             seen.add(str(path))
-            out.append({"name": name, "path": str(path), "rel_path": str(path.relative_to(vault))})
-        elif name not in seen:
+            out.append({"name": path.stem.replace("-", " "), "path": str(path), "rel_path": str(path.relative_to(vault))})
+        elif not path and name not in seen:
             seen.add(name)
             out.append({"name": name, "path": "", "rel_path": "unresolved wikilink/frontmatter entity"})
     return out[:30]
+
+
+def canonical_entity_path(path: Path, by_norm: dict[str, Path]) -> Path:
+    try:
+        frontmatter, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+    except OSError:
+        return path
+    if frontmatter.get("type") != "alias" or not frontmatter.get("canonical"):
+        return path
+    canonical = str(frontmatter["canonical"])
+    links = extract_wikilinks(canonical)
+    target = links[0] if links else canonical
+    return by_norm.get(normalize_entity_name(target), path)
 
 
 def normalize_entity_name(name: str) -> str:

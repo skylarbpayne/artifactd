@@ -12,6 +12,7 @@ from project_dashboard_generator import (
     extract_sections,
     extract_wikilinks,
     parse_frontmatter,
+    resolve_entity_paths,
     write_outputs,
 )
 
@@ -98,6 +99,29 @@ key_people: [Jacqueline Aguilar]
     assert data["kanban"]["active_count"] == 1
     assert data["entities"][0]["rel_path"] == "3_Resources/CRM/People/Jacqueline Aguilar.md"
     assert data["artifacts"][0]["slug"] == "wedding-demo"
+
+
+def test_resolve_entity_paths_follows_alias_notes_and_dedupes(tmp_path):
+    people = tmp_path / "3_Resources" / "CRM" / "People"
+    people.mkdir(parents=True)
+    (people / "Kimberly Theisen.md").write_text(
+        "---\ntype: person\n---\n# Kimberly Theisen\n",
+        encoding="utf-8",
+    )
+    (people / "Kimberly-Thiesen.md").write_text(
+        "---\ntype: alias\ncanonical: [[Kimberly Theisen]]\n---\n# Kimberly-Thiesen\n",
+        encoding="utf-8",
+    )
+
+    entities = resolve_entity_paths(tmp_path, ["Kimberly Thiesen", "Kimberly Theisen"])
+
+    assert entities == [
+        {
+            "name": "Kimberly Theisen",
+            "path": str(people / "Kimberly Theisen.md"),
+            "rel_path": "3_Resources/CRM/People/Kimberly Theisen.md",
+        }
+    ]
 
 
 def test_write_outputs_creates_directory_deployable_index(tmp_path):
