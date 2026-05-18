@@ -23,13 +23,15 @@ python -m pip install -e '.[dev]'
 
 ```bash
 # Start local server
-ARTIFACTD_COOKIE_SECRET="change-me" artifactd serve --port 8787
+ARTIFACTD_COOKIE_SECRET="change-me" \
+ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" \
+artifactd serve --port 8787
 
 # Deploy a public artifact
-artifactd deploy ./demo.html --slug demo
+ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./demo.html --slug demo
 
 # Deploy a protected artifact
-artifactd deploy ./dist --slug investor-memo --password "secret"
+ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./dist --slug investor-memo --password "secret"
 
 # Manage artifacts
 artifactd list
@@ -37,6 +39,8 @@ artifactd protect demo --password "new-secret"
 artifactd unprotect demo
 artifactd delete demo
 ```
+
+When `ARTIFACTD_PUBLIC_BASE_URL` or `--public-base-url` is set, deploy/list also prints the public HTTPS URL.
 
 Default storage lives at:
 
@@ -65,17 +69,30 @@ cloudflared tunnel --url http://localhost:8787
 Named tunnel with a stable hostname:
 
 ```bash
-cloudflared tunnel create artifacts
-cloudflared tunnel route dns artifacts artifacts.skylarpayne.com
-cloudflared tunnel run artifacts
+HOME=/Users/skylarpayne cloudflared tunnel create artifacts
+HOME=/Users/skylarpayne cloudflared tunnel route dns --overwrite-dns <tunnel-id> artifacts.skylarbpayne.com
+HOME=/Users/skylarpayne cloudflared tunnel --config ~/.cloudflared/artifacts.yml run <tunnel-id>
 ```
 
+Use the tunnel ID explicitly when another `~/.cloudflared/config.yml` exists; relying on the tunnel name can accidentally target the default config's tunnel. Ask me how I know.
+
 There is a starter config at `cloudflare/artifacts.example.yml` for a durable named tunnel.
+
+The production setup on Skylar's Mac uses:
+
+```text
+/Users/skylarpayne/.hermes/artifacts/.cookie-secret
+/Users/skylarpayne/.cloudflared/artifacts.yml
+/Users/skylarpayne/Library/LaunchAgents/com.skylar.artifactd.plist
+/Users/skylarpayne/Library/LaunchAgents/com.skylar.artifactd-tunnel.plist
+```
+
+Repo copies of the LaunchAgent plists live under `launchd/`; `scripts/install-launchagents.sh` installs and bootstraps them from a normal GUI login shell.
 
 Then artifacts are available as:
 
 ```text
-https://artifacts.skylarpayne.com/<slug>
+https://artifacts.skylarbpayne.com/<slug>
 ```
 
 ## Security notes

@@ -1,0 +1,10 @@
+# Installed Cloudflare Tunnel config for artifactd.
+# Credentials live outside the repo at ~/.cloudflared/d8df3cd1-438e-47c9-996f-2c5d2b271bf1.json.
+
+tunnel: d8df3cd1-438e-47c9-996f-2c5d2b271bf1
+credentials-file: /Users/skylarpayne/.cloudflared/d8df3cd1-438e-47c9-996f-2c5d2b271bf1.json
+
+ingress:
+  - hostname: artifacts.skylarbpayne.com
+    service: http://127.0.0.1:8787
+  - service: http_status:404

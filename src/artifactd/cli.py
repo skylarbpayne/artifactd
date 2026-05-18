@@ -12,12 +12,13 @@ from .store import ArtifactStore
 app = typer.Typer(help="Deploy and serve tiny static HTML artifacts.")
 
 _home_option = typer.Option(Path(os.environ.get("ARTIFACTD_HOME", "~/.hermes/artifacts")).expanduser(), "--home", help="Artifact storage home.")
+_public_base_option = typer.Option(os.environ.get("ARTIFACTD_PUBLIC_BASE_URL"), "--public-base-url", help="Public HTTPS base URL, e.g. https://artifacts.example.com")
 _port_option = typer.Option(8787, "--port", help="Local server port.")
 
 
 @app.callback()
-def main(ctx: typer.Context, home: Path = _home_option):
-    ctx.obj = {"home": home}
+def main(ctx: typer.Context, home: Path = _home_option, public_base_url: Optional[str] = _public_base_option):
+    ctx.obj = {"home": home, "public_base_url": _normalize_base_url(public_base_url)}
 
 
 @app.command()
@@ -33,7 +34,9 @@ def deploy(
     artifact = store.deploy(source, slug=slug, title=title, password=password)
     visibility = "protected" if artifact.has_password else "public"
     typer.echo(f"deployed {artifact.slug} ({visibility})")
-    typer.echo(f"local_url=http://127.0.0.1:{port}/{artifact.slug}")
+    typer.echo(f"local_url={_local_url(artifact.slug, port)}")
+    if ctx.obj.get("public_base_url"):
+        typer.echo(f"public_url={_public_url(ctx.obj['public_base_url'], artifact.slug)}")
 
 
 @app.command("list")
@@ -45,7 +48,10 @@ def list_artifacts(ctx: typer.Context, port: int = _port_option):
         return
     for artifact in artifacts:
         visibility = "protected" if artifact.has_password else "public"
-        typer.echo(f"{artifact.slug}\t{visibility}\thttp://127.0.0.1:{port}/{artifact.slug}")
+        urls = [_local_url(artifact.slug, port)]
+        if ctx.obj.get("public_base_url"):
+            urls.append(_public_url(ctx.obj["public_base_url"], artifact.slug))
+        typer.echo(f"{artifact.slug}\t{visibility}\t" + "\t".join(urls))
 
 
 @app.command()
@@ -88,3 +94,17 @@ def tunnel_runbook(port: int = _port_option, hostname: Optional[str] = typer.Opt
         typer.echo("  cloudflared tunnel create artifacts")
         typer.echo(f"  cloudflared tunnel route dns artifacts {hostname}")
         typer.echo("  cloudflared tunnel run artifacts")
+
+
+def _normalize_base_url(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return value.rstrip("/")
+
+
+def _local_url(slug: str, port: int) -> str:
+    return f"http://127.0.0.1:{port}/{slug}"
+
+
+def _public_url(base_url: str, slug: str) -> str:
+    return f"{base_url}/{slug}"
