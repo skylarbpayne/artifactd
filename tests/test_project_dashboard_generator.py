@@ -13,7 +13,6 @@ from project_dashboard_generator import (
     extract_wikilinks,
     parse_frontmatter,
     write_outputs,
-    deploy_outputs,
 )
 
 
@@ -121,7 +120,11 @@ def test_write_outputs_creates_directory_deployable_index(tmp_path):
 
     assert tmp_path / "index.html" in paths
     assert (tmp_path / "index.html").read_text(encoding="utf-8") == (tmp_path / "project-dashboard-index.html").read_text(encoding="utf-8")
-    assert "project-dashboard-wedding.html" in (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "https://artifacts.skylarbpayne.com/project-dashboard-wedding" in (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert tmp_path / "project-dashboard-wedding" / "index.html" in paths
+    standalone = (tmp_path / "project-dashboard-wedding" / "index.html").read_text(encoding="utf-8")
+    assert "https://artifacts.skylarbpayne.com/project-dashboard-wedding" in standalone
+    assert "./project-dashboard-wedding.html" not in standalone
 
 
 def test_deploy_outputs_deploys_single_protected_directory_artifact(tmp_path):

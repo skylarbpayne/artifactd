@@ -396,7 +396,7 @@ def render_dashboard(data: dict[str, Any], all_projects: list[dict[str, Any]]) -
         for a in data["artifacts"]
     ) or "<li><strong>No linked artifacts yet</strong><span>This dashboard becomes the first project surface.</span></li>"
     project_nav = "".join(
-        f"<a class='{ 'active' if p['key'] == data['key'] else '' }' href='./{html.escape(p['slug'])}.html'>{html.escape(p['name'])}</a>"
+        f"<a class='{ 'active' if p['key'] == data['key'] else '' }' href='{DEFAULT_PUBLIC_BASE_URL}/{html.escape(p['slug'])}'>{html.escape(p['name'])}</a>"
         for p in all_projects
     )
     data_json = html.escape(json.dumps(data, ensure_ascii=False), quote=False)
@@ -458,7 +458,7 @@ button, select {{ background:var(--panel2); color:var(--text); border:1px solid 
 <aside>
   <div class="logo">project cockpits</div>
   <p>Generated from Skyvault, Hermes Kanban, artifact metadata, and entity links.</p>
-  <nav class="nav">{project_nav}<a href="./project-dashboard-index.html">Index</a></nav>
+  <nav class="nav">{project_nav}<a href="{DEFAULT_PUBLIC_BASE_URL}/{DEFAULT_DEPLOY_SLUG}">Index</a></nav>
   <p class="receipt">Generated: {html.escape(data['generated_at_iso'])}\nBoundary: source truth stays in Skyvault/Kanban.</p>
 </aside>
 <main>
@@ -524,7 +524,7 @@ def render_task_list(tasks: list[dict[str, Any]], empty: str) -> str:
 def render_index(projects: list[dict[str, Any]]) -> str:
     cards = "".join(
         f"""
-        <a class="project-card" href="./{html.escape(p['slug'])}.html" style="--accent:{html.escape(p['accent'])}">
+        <a class="project-card" href="{DEFAULT_PUBLIC_BASE_URL}/{html.escape(p['slug'])}" style="--accent:{html.escape(p['accent'])}">
           <span>{html.escape(p['name'])}</span>
           <strong>{p['kanban']['active_count']} active · {p['kanban']['blocked_count']} blocked</strong>
           <em>{html.escape(p['objective'])}</em>
@@ -540,9 +540,15 @@ def write_outputs(projects: list[dict[str, Any]], out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     for project in projects:
+        content = render_dashboard(project, projects)
         path = out_dir / f"{project['slug']}.html"
-        path.write_text(render_dashboard(project, projects), encoding="utf-8")
+        path.write_text(content, encoding="utf-8")
         paths.append(path)
+        standalone_dir = out_dir / project["slug"]
+        standalone_dir.mkdir(parents=True, exist_ok=True)
+        standalone_index = standalone_dir / "index.html"
+        standalone_index.write_text(content, encoding="utf-8")
+        paths.append(standalone_index)
     index = out_dir / "project-dashboard-index.html"
     directory_index = out_dir / "index.html"
     index_content = render_index(projects)

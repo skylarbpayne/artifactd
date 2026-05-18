@@ -102,6 +102,22 @@ def test_archive_restore_and_search_filters_active_by_default(tmp_path: Path):
     assert [artifact.slug for artifact in store.search("site")] == ["site"]
 
 
+def test_redeploy_reactivates_archived_artifact(tmp_path: Path):
+    source = tmp_path / "site.html"
+    source.write_text("<h1>Site v1</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    store.deploy(source, slug="site", title="Site")
+    store.archive("site", reason="old")
+    source.write_text("<h1>Site v2</h1>", encoding="utf-8")
+
+    redeployed = store.deploy(source, slug="site", title="Site v2")
+
+    assert redeployed.status == "active"
+    assert redeployed.archived_at is None
+    assert redeployed.archive_reason is None
+    assert [artifact.slug for artifact in store.list()] == ["site"]
+
+
 def test_pinned_artifacts_cannot_be_archived_or_pruned(tmp_path: Path):
     source = tmp_path / "keep.html"
     source.write_text("<h1>Keep</h1>", encoding="utf-8")
