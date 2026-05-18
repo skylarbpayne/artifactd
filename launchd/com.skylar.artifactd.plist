@@ -5,6 +5,12 @@
   <key>Label</key>
   <string>com.skylar.artifactd</string>
 
+  <key>UserName</key>
+  <string>skylarpayne</string>
+
+  <key>GroupName</key>
+  <string>staff</string>
+
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
@@ -29,6 +35,8 @@
 
   <key>EnvironmentVariables</key>
   <dict>
+    <key>HOME</key>
+    <string>/Users/skylarpayne</string>
     <key>PATH</key>
     <string>/Users/skylarpayne/artifactd/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>ARTIFACTD_HOME</key>

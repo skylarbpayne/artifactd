@@ -77,22 +77,24 @@ HOME=/Users/skylarpayne cloudflared tunnel --config ~/.cloudflared/artifacts.yml
 Use the tunnel ID explicitly when another `~/.cloudflared/config.yml` exists; relying on the tunnel name can accidentally target the default config's tunnel. Ask me how I know.
 
 There is a starter config at `cloudflare/artifacts.example.yml` for a durable named tunnel.
-The production setup on Skylar's Mac uses:
+The production setup on Skylar's headless Mac mini uses **system LaunchDaemons**, not GUI LaunchAgents:
 
 ```text
 /Users/skylarpayne/.hermes/artifacts/.cookie-secret
 /Users/skylarpayne/.cloudflared/artifacts.yml
-/Users/skylarpayne/Library/LaunchAgents/com.skylar.artifactd.plist
-/Users/skylarpayne/Library/LaunchAgents/com.skylar.artifactd-tunnel.plist
+/Library/LaunchDaemons/com.skylar.artifactd.plist
+/Library/LaunchDaemons/com.skylar.artifactd-tunnel.plist
 ```
 
-Install/reload both LaunchAgents with:
+Install/reload both LaunchDaemons with:
 
 ```bash
-scripts/install-launchagents.sh
+scripts/install-launchdaemons.sh
 ```
 
-Repo copies of the LaunchAgent plists live under `launchd/`; `scripts/install-launchagents.sh` installs and bootstraps them from a normal GUI login shell.
+The installer uses `sudo`, installs root-owned plists into `/Library/LaunchDaemons`, loads them into the `system` launchd domain, runs both daemons as `skylarpayne`, removes stale GUI LaunchAgent copies from the earlier laptop-oriented setup, and verifies local + tunnel health.
+
+Repo copies of the LaunchDaemon plists live under `launchd/`; `scripts/install-launchagents.sh` is kept only as a deprecated compatibility wrapper that delegates to `scripts/install-launchdaemons.sh`.
 
 Then artifacts are available as:
 

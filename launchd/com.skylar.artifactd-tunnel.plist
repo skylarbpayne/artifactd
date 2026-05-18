@@ -5,6 +5,12 @@
   <key>Label</key>
   <string>com.skylar.artifactd-tunnel</string>
 
+  <key>UserName</key>
+  <string>skylarpayne</string>
+
+  <key>GroupName</key>
+  <string>staff</string>
+
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/cloudflared</string>
