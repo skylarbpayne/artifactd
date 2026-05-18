@@ -77,7 +77,6 @@ HOME=/Users/skylarpayne cloudflared tunnel --config ~/.cloudflared/artifacts.yml
 Use the tunnel ID explicitly when another `~/.cloudflared/config.yml` exists; relying on the tunnel name can accidentally target the default config's tunnel. Ask me how I know.
 
 There is a starter config at `cloudflare/artifacts.example.yml` for a durable named tunnel.
-
 The production setup on Skylar's Mac uses:
 
 ```text
@@ -85,6 +84,12 @@ The production setup on Skylar's Mac uses:
 /Users/skylarpayne/.cloudflared/artifacts.yml
 /Users/skylarpayne/Library/LaunchAgents/com.skylar.artifactd.plist
 /Users/skylarpayne/Library/LaunchAgents/com.skylar.artifactd-tunnel.plist
+```
+
+Install/reload both LaunchAgents with:
+
+```bash
+scripts/install-launchagents.sh
 ```
 
 Repo copies of the LaunchAgent plists live under `launchd/`; `scripts/install-launchagents.sh` installs and bootstraps them from a normal GUI login shell.
