@@ -49,3 +49,54 @@ def test_missing_artifact_404s(tmp_path: Path):
     client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
 
     assert client.get("/nope").status_code == 404
+
+
+def test_homepage_lists_artifacts_with_descriptions_and_search(tmp_path: Path):
+    deck = tmp_path / "deck.html"
+    deck.write_text("<h1>Deck</h1>", encoding="utf-8")
+    website = tmp_path / "website.html"
+    website.write_text("<h1>Website</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    store.deploy(deck, slug="spring-gala-deck", title="Spring Gala Deck", description="Sponsor presentation storyboard")
+    store.deploy(website, slug="website-preview", title="Website Preview", description="Agora homepage copy review")
+    client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
+
+    home = client.get("/")
+    filtered = client.get("/?q=sponsor")
+
+    assert home.status_code == 200
+    assert "Search artifacts" in home.text
+    assert "Spring Gala Deck" in home.text
+    assert "Sponsor presentation storyboard" in home.text
+    assert "Website Preview" in home.text
+    assert filtered.status_code == 200
+    assert "Spring Gala Deck" in filtered.text
+    assert "Website Preview" not in filtered.text
+
+
+def test_interactive_gog_endpoint_requires_artifact_password(tmp_path: Path):
+    source = tmp_path / "reauth.html"
+    source.write_text("<h1>Reauth</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    store.deploy(source, slug="gmail-reauth-cockpit", password="opensesame")
+    client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
+
+    locked = client.get("/gmail-reauth-cockpit/_interactive/gog/accounts")
+    client.post("/gmail-reauth-cockpit/login", data={"password": "opensesame"}, follow_redirects=False)
+    unlocked = client.get("/gmail-reauth-cockpit/_interactive/gog/accounts")
+
+    assert locked.status_code == 401
+    assert unlocked.status_code == 200
+    assert "jacquelineaguilar030@gmail.com" in unlocked.text
+
+
+def test_interactive_gog_endpoint_is_only_available_for_reauth_slug(tmp_path: Path):
+    source = tmp_path / "other.html"
+    source.write_text("<h1>Other</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    store.deploy(source, slug="other")
+    client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
+
+    response = client.get("/other/_interactive/gog/accounts")
+
+    assert response.status_code == 404

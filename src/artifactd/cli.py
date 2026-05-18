@@ -27,11 +27,12 @@ def deploy(
     source: Path = typer.Argument(..., exists=True, help="HTML file or directory containing index.html."),
     slug: str = typer.Option(..., "--slug", "-s", help="Public artifact slug."),
     title: Optional[str] = typer.Option(None, "--title", help="Display title."),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Short description used on the artifacts home page and search."),
     password: Optional[str] = typer.Option(None, "--password", help="Protect artifact with this password."),
     port: int = _port_option,
 ):
     store = ArtifactStore(ctx.obj["home"])
-    artifact = store.deploy(source, slug=slug, title=title, password=password)
+    artifact = store.deploy(source, slug=slug, title=title, description=description, password=password)
     visibility = "protected" if artifact.has_password else "public"
     typer.echo(f"deployed {artifact.slug} ({visibility})")
     typer.echo(f"local_url={_local_url(artifact.slug, port)}")
@@ -40,9 +41,13 @@ def deploy(
 
 
 @app.command("list")
-def list_artifacts(ctx: typer.Context, port: int = _port_option):
+def list_artifacts(
+    ctx: typer.Context,
+    port: int = _port_option,
+    query: str = typer.Option("", "--query", "-q", help="Filter by title, slug, or description."),
+):
     store = ArtifactStore(ctx.obj["home"])
-    artifacts = list(store.list())
+    artifacts = list(store.search(query) if query else store.list())
     if not artifacts:
         typer.echo("no artifacts deployed")
         return
@@ -51,7 +56,13 @@ def list_artifacts(ctx: typer.Context, port: int = _port_option):
         urls = [_local_url(artifact.slug, port)]
         if ctx.obj.get("public_base_url"):
             urls.append(_public_url(ctx.obj["public_base_url"], artifact.slug))
-        typer.echo(f"{artifact.slug}\t{visibility}\t" + "\t".join(urls))
+        fields = [artifact.slug, visibility]
+        if artifact.title:
+            fields.append(artifact.title)
+        if artifact.description:
+            fields.append(artifact.description)
+        fields.extend(urls)
+        typer.echo("\t".join(fields))
 
 
 @app.command()
@@ -66,6 +77,20 @@ def unprotect(ctx: typer.Context, slug: str):
     store = ArtifactStore(ctx.obj["home"])
     artifact = store.unprotect(slug)
     typer.echo(f"unprotected {artifact.slug}")
+
+
+@app.command()
+def describe(
+    ctx: typer.Context,
+    slug: str,
+    title: Optional[str] = typer.Option(None, "--title", help="Updated display title."),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Updated searchable description."),
+):
+    if title is None and description is None:
+        raise typer.BadParameter("provide --title, --description, or both")
+    store = ArtifactStore(ctx.obj["home"])
+    artifact = store.update_metadata(slug, title=title, description=description)
+    typer.echo(f"updated {artifact.slug}")
 
 
 @app.command()

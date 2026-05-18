@@ -54,3 +54,59 @@ def test_cli_deploy_and_list_print_public_url_when_base_is_configured(tmp_path: 
     assert "public_url=https://artifacts.skylarbpayne.com/demo" in deployed.output
     assert listed.exit_code == 0
     assert "https://artifacts.skylarbpayne.com/demo" in listed.output
+
+
+def test_cli_deploy_accepts_description_and_list_shows_it(tmp_path: Path):
+    runner = CliRunner()
+    source = tmp_path / "demo.html"
+    source.write_text("<h1>Demo</h1>", encoding="utf-8")
+    home = tmp_path / "home"
+
+    deployed = runner.invoke(
+        app,
+        [
+            "--home",
+            str(home),
+            "deploy",
+            str(source),
+            "--slug",
+            "demo",
+            "--title",
+            "Demo Artifact",
+            "--description",
+            "Review board for homepage edits",
+        ],
+    )
+    listed = runner.invoke(app, ["--home", str(home), "list"])
+
+    assert deployed.exit_code == 0
+    assert listed.exit_code == 0
+    assert "Review board for homepage edits" in listed.output
+
+
+def test_cli_describe_updates_existing_artifact_metadata(tmp_path: Path):
+    runner = CliRunner()
+    source = tmp_path / "demo.html"
+    source.write_text("<h1>Demo</h1>", encoding="utf-8")
+    home = tmp_path / "home"
+    runner.invoke(app, ["--home", str(home), "deploy", str(source), "--slug", "demo"])
+
+    described = runner.invoke(
+        app,
+        [
+            "--home",
+            str(home),
+            "describe",
+            "demo",
+            "--title",
+            "Demo Preview",
+            "--description",
+            "Visual review board for Jacqueline",
+        ],
+    )
+    listed = runner.invoke(app, ["--home", str(home), "list"])
+
+    assert described.exit_code == 0
+    assert "updated demo" in described.output
+    assert "Demo Preview" in listed.output
+    assert "Visual review board for Jacqueline" in listed.output

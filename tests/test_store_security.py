@@ -38,6 +38,24 @@ def test_deploy_single_html_file_creates_artifact(tmp_path: Path):
     assert store.get("demo-artifact").slug == "demo-artifact"
 
 
+def test_deploy_stores_description_and_searches_metadata(tmp_path: Path):
+    source = tmp_path / "deck.html"
+    source.write_text("<h1>Deck</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+
+    artifact = store.deploy(
+        source,
+        slug="spring-gala-deck",
+        title="Spring Gala Deck",
+        description="Visual storyboard for Jacqueline's sponsor presentation",
+    )
+    matches = list(store.search("sponsor"))
+
+    assert artifact.description == "Visual storyboard for Jacqueline's sponsor presentation"
+    assert store.get("spring-gala-deck").description == artifact.description
+    assert [match.slug for match in matches] == ["spring-gala-deck"]
+
+
 def test_deploy_directory_preserves_assets(tmp_path: Path):
     source = tmp_path / "site"
     (source / "assets").mkdir(parents=True)
@@ -49,3 +67,16 @@ def test_deploy_directory_preserves_assets(tmp_path: Path):
 
     assert artifact.slug == "site"
     assert (tmp_path / "home" / "sites" / "site" / "assets" / "logo.txt").read_text(encoding="utf-8") == "LOGO"
+
+
+def test_update_metadata_changes_title_and_description_without_redeploying(tmp_path: Path):
+    source = tmp_path / "site.html"
+    source.write_text("<h1>Site</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    store.deploy(source, slug="site")
+
+    updated = store.update_metadata("site", title="Agora Site Preview", description="Before and after homepage edits")
+
+    assert updated.title == "Agora Site Preview"
+    assert updated.description == "Before and after homepage edits"
+    assert [artifact.slug for artifact in store.search("homepage")] == ["site"]

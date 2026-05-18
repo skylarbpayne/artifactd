@@ -6,6 +6,8 @@ Tiny local artifact server for agent-produced HTML artifacts.
 
 - Deploy a single `.html` file or a directory with `index.html`.
 - Serve artifacts locally from SQLite metadata + static files.
+- Browse artifacts from a searchable home page.
+- Store searchable titles and descriptions for each artifact.
 - Protect each artifact with its own password.
 - Expose the local server through Cloudflare Tunnel.
 
@@ -28,19 +30,20 @@ ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" \
 artifactd serve --port 8787
 
 # Deploy a public artifact
-ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./demo.html --slug demo
+ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./demo.html --slug demo --title "Demo" --description "Visual review board for the demo"
 
 # Deploy a protected artifact
-ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./dist --slug investor-memo --password "secret"
+ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./dist --slug investor-memo --title "Investor Memo" --description "Protected investor memo review surface" --password "secret"
 
 # Manage artifacts
 artifactd list
+artifactd describe demo --title "Demo v2" --description "Updated searchable description"
 artifactd protect demo --password "new-secret"
 artifactd unprotect demo
 artifactd delete demo
 ```
 
-When `ARTIFACTD_PUBLIC_BASE_URL` or `--public-base-url` is set, deploy/list also prints the public HTTPS URL.
+When `ARTIFACTD_PUBLIC_BASE_URL` or `--public-base-url` is set, deploy/list also prints the public HTTPS URL. The root path (`/`) is a searchable artifact home page; search matches slug, title, and description.
 
 Default storage lives at:
 

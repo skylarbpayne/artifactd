@@ -17,6 +17,7 @@ _SLUG_RE = re.compile(r"[^a-z0-9-]+")
 class Artifact:
     slug: str
     title: str
+    description: str
     path: Path
     created_at: int
     updated_at: int
@@ -46,7 +47,15 @@ class ArtifactStore:
         self.sites_dir.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def deploy(self, source: Path, *, slug: str, title: Optional[str] = None, password: Optional[str] = None) -> Artifact:
+    def deploy(
+        self,
+        source: Path,
+        *,
+        slug: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> Artifact:
         source = Path(source).expanduser().resolve()
         if not source.exists():
             raise FileNotFoundError(source)
@@ -81,7 +90,8 @@ class ArtifactStore:
         password_hash_value = hash_password(password) if password else (existing.password_hash if existing else None)
         artifact = Artifact(
             slug=safe_slug,
-            title=title or safe_slug,
+            title=title or (existing.title if existing else safe_slug),
+            description=description if description is not None else (existing.description if existing else ""),
             path=artifact_dir,
             created_at=created_at,
             updated_at=now,
@@ -92,13 +102,35 @@ class ArtifactStore:
 
     def list(self) -> Iterable[Artifact]:
         with self._connect() as con:
-            rows = con.execute("SELECT slug, title, path, created_at, updated_at, password_hash FROM artifacts ORDER BY updated_at DESC").fetchall()
+            rows = con.execute(
+                "SELECT slug, title, description, path, created_at, updated_at, password_hash FROM artifacts ORDER BY updated_at DESC"
+            ).fetchall()
+        return [self._row_to_artifact(row) for row in rows]
+
+    def search(self, query: str) -> Iterable[Artifact]:
+        needle = query.strip()
+        if not needle:
+            return self.list()
+        like = f"%{needle.lower()}%"
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT slug, title, description, path, created_at, updated_at, password_hash
+                FROM artifacts
+                WHERE lower(slug) LIKE ? OR lower(title) LIKE ? OR lower(description) LIKE ?
+                ORDER BY updated_at DESC
+                """,
+                (like, like, like),
+            ).fetchall()
         return [self._row_to_artifact(row) for row in rows]
 
     def get(self, slug: str) -> Optional[Artifact]:
         safe_slug = sanitize_slug(slug)
         with self._connect() as con:
-            row = con.execute("SELECT slug, title, path, created_at, updated_at, password_hash FROM artifacts WHERE slug = ?", (safe_slug,)).fetchone()
+            row = con.execute(
+                "SELECT slug, title, description, path, created_at, updated_at, password_hash FROM artifacts WHERE slug = ?",
+                (safe_slug,),
+            ).fetchone()
         return self._row_to_artifact(row) if row else None
 
     def protect(self, slug: str, password: str) -> Artifact:
@@ -106,6 +138,7 @@ class ArtifactStore:
         updated = Artifact(
             slug=artifact.slug,
             title=artifact.title,
+            description=artifact.description,
             path=artifact.path,
             created_at=artifact.created_at,
             updated_at=int(time.time()),
@@ -119,10 +152,25 @@ class ArtifactStore:
         updated = Artifact(
             slug=artifact.slug,
             title=artifact.title,
+            description=artifact.description,
             path=artifact.path,
             created_at=artifact.created_at,
             updated_at=int(time.time()),
             password_hash=None,
+        )
+        self._upsert(updated)
+        return updated
+
+    def update_metadata(self, slug: str, *, title: Optional[str] = None, description: Optional[str] = None) -> Artifact:
+        artifact = self._require(slug)
+        updated = Artifact(
+            slug=artifact.slug,
+            title=title if title is not None else artifact.title,
+            description=description if description is not None else artifact.description,
+            path=artifact.path,
+            created_at=artifact.created_at,
+            updated_at=int(time.time()),
+            password_hash=artifact.password_hash,
         )
         self._upsert(updated)
         return updated
@@ -161,6 +209,7 @@ class ArtifactStore:
                 CREATE TABLE IF NOT EXISTS artifacts (
                     slug TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
                     path TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -168,26 +217,39 @@ class ArtifactStore:
                 )
                 """
             )
+            columns = {row[1] for row in con.execute("PRAGMA table_info(artifacts)").fetchall()}
+            if "description" not in columns:
+                con.execute("ALTER TABLE artifacts ADD COLUMN description TEXT NOT NULL DEFAULT ''")
 
     def _upsert(self, artifact: Artifact) -> None:
         with self._connect() as con:
             con.execute(
                 """
-                INSERT INTO artifacts (slug, title, path, created_at, updated_at, password_hash)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO artifacts (slug, title, description, path, created_at, updated_at, password_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slug) DO UPDATE SET
                     title = excluded.title,
+                    description = excluded.description,
                     path = excluded.path,
                     updated_at = excluded.updated_at,
                     password_hash = excluded.password_hash
                 """,
-                (artifact.slug, artifact.title, str(artifact.path), artifact.created_at, artifact.updated_at, artifact.password_hash),
+                (
+                    artifact.slug,
+                    artifact.title,
+                    artifact.description,
+                    str(artifact.path),
+                    artifact.created_at,
+                    artifact.updated_at,
+                    artifact.password_hash,
+                ),
             )
 
     def _row_to_artifact(self, row: sqlite3.Row) -> Artifact:
         return Artifact(
             slug=row["slug"],
             title=row["title"],
+            description=row["description"] or "",
             path=Path(row["path"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
