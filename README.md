@@ -102,6 +102,36 @@ Then artifacts are available as:
 https://artifacts.skylarbpayne.com/<slug>
 ```
 
+## Echo / Agora Comms artifact surface
+
+Echo uses the same `artifactd` codebase with isolated storage and a separate Cloudflare Tunnel:
+
+```text
+storage:  /Users/skylarpayne/.hermes/profiles/echo/artifacts
+origin:   http://127.0.0.1:8788
+public:   https://artifacts.agoracomms.com/<slug>
+tunnel:   f49229f5-9211-4551-b56b-d28d3c3ea99b
+config:   /Users/skylarpayne/.cloudflared/echo-artifacts.yml
+plists:   /Library/LaunchDaemons/com.skylar.echo-artifactd.plist
+          /Library/LaunchDaemons/com.skylar.echo-artifactd-tunnel.plist
+```
+
+Local deploy example:
+
+```bash
+/Users/skylarpayne/artifactd/.venv/bin/artifactd \
+  --home /Users/skylarpayne/.hermes/profiles/echo/artifacts \
+  --public-base-url https://artifacts.agoracomms.com \
+  deploy ./demo.html --slug demo --port 8788
+```
+
+Install/reload Echo's system LaunchDaemons with sudo/root:
+
+```bash
+cd /Users/skylarpayne/artifactd
+sudo scripts/install-echo-launchdaemons.sh
+```
+
 ## Security notes
 
 - Deploy is local CLI only in this MVP. There is no public deploy API.

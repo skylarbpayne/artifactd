@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.skylar.echo-artifactd</string>
+
+  <key>UserName</key>
+  <string>skylarpayne</string>
+  <key>GroupName</key>
+  <string>staff</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/skylarpayne/artifactd</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd /Users/skylarpayne/artifactd &amp;&amp; export ARTIFACTD_COOKIE_SECRET="$(cat /Users/skylarpayne/.hermes/profiles/echo/artifacts/.cookie-secret)" &amp;&amp; exec /Users/skylarpayne/artifactd/.venv/bin/artifactd --home /Users/skylarpayne/.hermes/profiles/echo/artifacts --public-base-url https://artifacts.agoracomms.com serve --host 127.0.0.1 --port 8788</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/skylarpayne</string>
+    <key>PATH</key>
+    <string>/Users/skylarpayne/artifactd/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>ARTIFACTD_HOME</key>
+    <string>/Users/skylarpayne/.hermes/profiles/echo/artifacts</string>
+    <key>ARTIFACTD_PUBLIC_BASE_URL</key>
+    <string>https://artifacts.agoracomms.com</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/skylarpayne/Library/Logs/echo-artifactd/artifactd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/skylarpayne/Library/Logs/echo-artifactd/artifactd.err.log</string>
+</dict>
+</plist>

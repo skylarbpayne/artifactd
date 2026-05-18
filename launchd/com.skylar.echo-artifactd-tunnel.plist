@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.skylar.echo-artifactd-tunnel</string>
+
+  <key>UserName</key>
+  <string>skylarpayne</string>
+  <key>GroupName</key>
+  <string>staff</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/cloudflared</string>
+    <string>tunnel</string>
+    <string>--config</string>
+    <string>/Users/skylarpayne/.cloudflared/echo-artifacts.yml</string>
+    <string>run</string>
+    <string>f49229f5-9211-4551-b56b-d28d3c3ea99b</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/skylarpayne</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/skylarpayne/Library/Logs/echo-artifactd/cloudflared.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/skylarpayne/Library/Logs/echo-artifactd/cloudflared.err.log</string>
+</dict>
+</plist>

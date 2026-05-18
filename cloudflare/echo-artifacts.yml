@@ -1,0 +1,7 @@
+tunnel: f49229f5-9211-4551-b56b-d28d3c3ea99b
+credentials-file: /Users/skylarpayne/.cloudflared/f49229f5-9211-4551-b56b-d28d3c3ea99b.json
+
+ingress:
+  - hostname: artifacts.agoracomms.com
+    service: http://127.0.0.1:8788
+  - service: http_status:404
