@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import html
 import os
-import secrets
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Form, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
+from .actions import KanbanExecutor, register_action_routes
 from .interactive import register_interactive_routes
 from .security import sign_artifact_cookie, verify_artifact_cookie, verify_password
 from .store import Artifact, ArtifactStore
@@ -17,14 +17,18 @@ DEFAULT_HOME = Path(os.environ.get("ARTIFACTD_HOME", "~/.hermes/artifacts")).exp
 DEFAULT_COOKIE_SECRET = os.environ.get("ARTIFACTD_COOKIE_SECRET", "dev-only-change-me")
 
 
-def create_app(home: Path = DEFAULT_HOME, *, cookie_secret: Optional[str] = None) -> FastAPI:
+def create_app(home: Path = DEFAULT_HOME, *, cookie_secret: Optional[str] = None, kanban_executor: Optional[KanbanExecutor] = None) -> FastAPI:
     store = ArtifactStore(Path(home))
     secret = cookie_secret or DEFAULT_COOKIE_SECRET
     app = FastAPI(title="artifactd")
 
     @app.get("/", response_class=HTMLResponse)
     def index(q: str = "") -> str:
-        return _index_page(list(store.search(q)), query=q)
+        return _index_page(list(store.search(q)), query=q, heading="Artifact home", archive=False)
+
+    @app.get("/archive", response_class=HTMLResponse)
+    def archive(q: str = "") -> str:
+        return _index_page(list(store.search(q, status="archived")), query=q, heading="Archived artifacts", archive=True)
 
     @app.post("/{slug}/login")
     async def login(slug: str, password: str = Form(...)) -> Response:
@@ -44,6 +48,7 @@ def create_app(home: Path = DEFAULT_HOME, *, cookie_secret: Optional[str] = None
         )
         return response
 
+    register_action_routes(app, store, secret, kanban_executor=kanban_executor)
     register_interactive_routes(app, store, secret)
 
     @app.get("/{slug}")
@@ -57,15 +62,28 @@ def create_app(home: Path = DEFAULT_HOME, *, cookie_secret: Optional[str] = None
     return app
 
 
-def _index_page(artifacts: list[Artifact], *, query: str = "") -> str:
+def _index_page(artifacts: list[Artifact], *, query: str = "", heading: str = "Artifact home", archive: bool = False) -> str:
     escaped_query = html.escape(query.strip(), quote=True)
+    escaped_heading = html.escape(heading)
     cards = []
     for artifact in artifacts:
         slug = html.escape(artifact.slug)
         title = html.escape(artifact.title)
         description = html.escape(artifact.description or "No description yet.")
         visibility = "Protected" if artifact.has_password else "Public"
+        if artifact.status == "archived":
+            visibility = f"Archived · {visibility}"
+        if artifact.pinned:
+            visibility = f"Pinned · {visibility}"
         lock = "🔒" if artifact.has_password else "↗"
+        meta = []
+        if artifact.expires_at is not None:
+            meta.append(f"expires_at={artifact.expires_at}")
+        if artifact.capabilities:
+            meta.append("actions=" + ",".join(artifact.capabilities))
+        if artifact.archive_reason:
+            meta.append("reason=" + artifact.archive_reason)
+        meta_html = f"<p class=\"meta\">{html.escape(' · '.join(meta))}</p>" if meta else ""
         cards.append(
             f"""
             <article class="card">
@@ -75,13 +93,24 @@ def _index_page(artifacts: list[Artifact], *, query: str = "") -> str:
               </div>
               <h2><a href="/{slug}">{title}</a></h2>
               <p>{description}</p>
+              {meta_html}
               <code>/{slug}</code>
             </article>
             """
         )
     if not cards:
-        empty = "No artifacts match that search." if escaped_query else "No artifacts deployed yet."
+        if escaped_query:
+            empty = "No archived artifacts match that search." if archive else "No artifacts match that search."
+        else:
+            empty = "No archived artifacts." if archive else "No artifacts deployed yet."
         cards.append(f'<p class="empty">{html.escape(empty)}</p>')
+    nav_href = "/" if archive else "/archive"
+    nav_label = "Active artifacts" if archive else "Archive"
+    lede = (
+        "Archived artifacts are hidden from the home page but remain recoverable until pruned."
+        if archive
+        else "A local-first index of Palmer artifacts. Search by title, slug, or description; protected artifacts still require their own password when opened. Artifacts may use browser JavaScript/localStorage; server actions require protected auth and explicit capabilities."
+    )
     return f"""
     <!doctype html>
     <html lang="en">
@@ -95,6 +124,7 @@ def _index_page(artifacts: list[Artifact], *, query: str = "") -> str:
           body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: radial-gradient(circle at top left, rgba(139,92,246,.35), transparent 32rem), var(--bg); }}
           main {{ width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 64px 0; }}
           header {{ display: grid; gap: 18px; margin-bottom: 32px; }}
+          nav a {{ display: inline-flex; width: fit-content; border: 1px solid var(--line); border-radius: 999px; padding: 10px 14px; color: var(--text); text-decoration: none; }}
           h1 {{ margin: 0; font-size: clamp(2.4rem, 7vw, 5rem); letter-spacing: -.06em; }}
           .lede {{ margin: 0; max-width: 42rem; color: var(--muted); font-size: 1.08rem; line-height: 1.6; }}
           form {{ display: flex; gap: 10px; max-width: 44rem; }}
@@ -108,6 +138,7 @@ def _index_page(artifacts: list[Artifact], *, query: str = "") -> str:
           a {{ color: inherit; text-decoration: none; }}
           a:hover {{ text-decoration: underline; }}
           .card p:not(.eyebrow) {{ min-height: 3em; color: var(--muted); line-height: 1.5; }}
+          .card p.meta {{ min-height: 0; font-size: .85rem; }}
           code {{ color: #c4b5fd; }}
           .empty {{ border: 1px dashed var(--line); border-radius: 20px; padding: 28px; color: var(--muted); }}
         </style>
@@ -116,9 +147,10 @@ def _index_page(artifacts: list[Artifact], *, query: str = "") -> str:
         <main>
           <header>
             <p class="eyebrow">artifactd</p>
-            <h1>Artifact home</h1>
-            <p class="lede">A local-first index of Palmer artifacts. Search by title, slug, or description; protected artifacts still require their own password when opened.</p>
-            <form method="get" action="/" role="search">
+            <h1>{escaped_heading}</h1>
+            <p class="lede">{html.escape(lede)}</p>
+            <nav><a href="{nav_href}">{nav_label}</a></nav>
+            <form method="get" action="{'/archive' if archive else '/'}" role="search">
               <input type="search" name="q" value="{escaped_query}" placeholder="Search artifacts" aria-label="Search artifacts">
               <button type="submit">Search artifacts</button>
             </form>

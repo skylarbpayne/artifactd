@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>artifactd next layer — interactivity, archive, project dashboards</title>
+  <style>
+    :root{
+      color-scheme:dark;
+      --bg:#080b12;--panel:#111827;--panel2:#0f172a;--ink:#f8fafc;--muted:#9ca3af;--line:rgba(255,255,255,.13);
+      --blue:#60a5fa;--violet:#a78bfa;--green:#86efac;--amber:#fbbf24;--rose:#fb7185;--cyan:#67e8f9;
+    }
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at 10% 0%,rgba(96,165,250,.28),transparent 32rem),radial-gradient(circle at 80% 10%,rgba(167,139,250,.22),transparent 32rem),var(--bg);color:var(--ink);font:16px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+    main{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:56px 0 80px}.eyebrow{margin:0;color:var(--cyan);font-size:.76rem;font-weight:900;letter-spacing:.14em;text-transform:uppercase}h1{font-size:clamp(2.6rem,7vw,5.6rem);line-height:.9;letter-spacing:-.07em;margin:12px 0 18px}.lede{font-size:1.12rem;color:var(--muted);max-width:760px;margin:0 0 28px}.grid{display:grid;gap:16px}.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}.cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}@media(max-width:850px){.cols-3,.cols-2{grid-template-columns:1fr}main{padding-top:32px}}
+    .card{border:1px solid var(--line);border-radius:26px;background:linear-gradient(180deg,rgba(255,255,255,.075),rgba(255,255,255,.045));box-shadow:0 24px 80px rgba(0,0,0,.28);padding:22px}.card h2,.card h3{letter-spacing:-.04em;line-height:1.05;margin:0 0 12px}.card p{color:var(--muted);margin:0 0 12px}.tag{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:6px 10px;color:#dbeafe;background:rgba(96,165,250,.11);font-size:.82rem;font-weight:800}.stack{display:flex;flex-wrap:wrap;gap:8px}.big{font-size:1.45rem;font-weight:900;letter-spacing:-.04em}.rec{border-color:rgba(134,239,172,.34);background:linear-gradient(180deg,rgba(134,239,172,.12),rgba(255,255,255,.045))}.warn{border-color:rgba(251,191,36,.34);background:linear-gradient(180deg,rgba(251,191,36,.11),rgba(255,255,255,.045))}.danger{border-color:rgba(251,113,133,.32)}
+    section{margin-top:28px}.lane{display:grid;grid-template-columns:160px 1fr;gap:18px;align-items:start}.lane+.lane{border-top:1px solid var(--line);padding-top:18px;margin-top:18px}.label{font-weight:900;color:var(--ink)}ul{margin:0;padding-left:1.1rem;color:var(--muted)}li{margin:.35rem 0}.matrix{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}.step{border:1px solid var(--line);border-radius:20px;padding:16px;background:rgba(15,23,42,.72)}.step b{display:block;margin-bottom:6px}.status{height:10px;border-radius:999px;background:linear-gradient(90deg,var(--green) 0 35%,var(--amber) 35% 72%,var(--rose) 72%)}
+    .tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.tab{border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--ink);border-radius:999px;padding:10px 14px;font-weight:850;cursor:pointer}.tab.active{background:var(--blue);border-color:transparent;color:#04111f}.panel{display:none}.panel.active{display:block}.check{display:flex;align-items:flex-start;gap:10px;border:1px solid var(--line);border-radius:16px;padding:12px;background:rgba(255,255,255,.04);margin:8px 0}.check input{margin-top:4px}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88rem;background:#020617;border:1px solid var(--line);border-radius:18px;padding:16px;overflow:auto;color:#dbeafe}.footer{color:var(--muted);margin-top:34px;font-size:.9rem}.action{border-left:4px solid var(--violet)}
+  </style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">artifactd roadmap · 2026-05-18</p>
+  <h1>The next layer is where this gets unfairly useful.</h1>
+  <p class="lede">My take: do not turn artifactd into a general app platform. Make it a <b>safe visual command surface</b>: artifacts can hold lightweight browser state, request a small set of approved server actions, age out cleanly, and render project dashboards from Skyvault + Kanban + entity graph context.</p>
+
+  <div class="grid cols-3">
+    <article class="card rec"><p class="eyebrow">Recommendation</p><div class="big">Capability-based interactivity</div><p>Support client-side JS now, then server actions only through explicit, named capabilities. No arbitrary backend code from generated artifacts. That way Echo can build visual workflows without accidentally creating a public RCE machine. Tiny detail.</p></article>
+    <article class="card"><p class="eyebrow">Cleanup</p><div class="big">Archive, don’t delete</div><p>Add lifecycle metadata and hide old artifacts by default. Delete only after explicit approval or a conservative retention rule for smoke tests.</p></article>
+    <article class="card"><p class="eyebrow">Dashboard</p><div class="big">Project cockpit generator</div><p>Generate HTV and wedding dashboards from notes, Kanban, artifacts, people/entities, and source links. The dashboard is the interface; Skyvault/Kanban stay truth.</p></article>
+  </div>
+
+  <section class="card">
+    <h2>1. Interactivity model</h2>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="client">Client state</button>
+      <button class="tab" data-tab="actions">Server actions</button>
+      <button class="tab" data-tab="security">Guardrails</button>
+    </div>
+    <div id="client" class="panel active">
+      <div class="lane"><div class="label">Ship first</div><div><p>Allow normal HTML/CSS/JS inside artifact files. This supports filters, tabs, checkboxes, calculators, drag sorting, local annotations, and review state via <code>localStorage</code>.</p><ul><li>Great for Jacqueline/Echo presentation review boards.</li><li>Great for daily cockpit checklists.</li><li>Great for project dashboards with filters and expand/collapse.</li></ul></div></div>
+      <div class="lane"><div class="label">Truth boundary</div><div><p>Browser-local state is convenience, not truth. If a decision matters, the artifact should offer a deliberate “record this” action that writes to Kanban/Skyvault through a controlled endpoint.</p></div></div>
+    </div>
+    <div id="actions" class="panel">
+      <div class="matrix">
+        <div class="step"><b>Capability registry</b><p>Artifact metadata declares allowed capabilities: <code>kanban.comment</code>, <code>kanban.create_task</code>, <code>artifact.archive</code>, <code>artifact.describe</code>, later <code>draft.email</code>.</p></div>
+        <div class="step"><b>Action endpoint</b><p>POST to <code>/{slug}/_actions/{capability}</code>. artifactd checks password cookie, capability allowlist, payload schema, size limits, and audit log.</p></div>
+        <div class="step"><b>Approval gates</b><p>External sends, publishing, scheduling, payments, credentials, repo pushes, or destructive changes become queued approval requests, not direct buttons.</p></div>
+      </div>
+    </div>
+    <div id="security" class="panel">
+      <ul>
+        <li>No arbitrary Python/Node/server-side artifact code. Ever, unless we build a sandbox later.</li>
+        <li>Protected artifacts required for anything with action capabilities or private project context.</li>
+        <li>CSRF token per artifact session, payload schemas, audit table, rate limits.</li>
+        <li>Every action writes an append-only receipt: who/when/slug/capability/payload hash/result.</li>
+        <li>Dangerous operations become approval cards for Skylar/Jacqueline, not clickable “oops” buttons.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="grid cols-2">
+    <article class="card">
+      <h2>2. Archive / cleanup</h2>
+      <p>Artifact soup is real. The home page will get useless unless lifecycle is first-class.</p>
+      <div class="code">metadata additions:
+- status: active | archived | deleted
+- project: htv | wedding | echo | palmer | misc
+- tags: []
+- owner: palmer | echo | skylar | jacqueline
+- source_refs: note paths, kanban ids, urls
+- expires_at
+- archived_at
+- archive_reason</div>
+      <ul>
+        <li>Home hides archived by default.</li>
+        <li><code>/archive</code> shows archived artifacts with restore.</li>
+        <li>CLI: <code>artifactd archive &lt;slug&gt;</code>, <code>restore</code>, <code>prune --dry-run</code>.</li>
+        <li>Suggested auto-archive: smoke tests 14d, daily cockpits 90d, review boards 180d unless pinned.</li>
+        <li>Never delete protected/private artifacts automatically at first. Archive only.</li>
+      </ul>
+    </article>
+    <article class="card">
+      <h2>3. Project dashboards</h2>
+      <p>Build a generator that turns entity graph + Skyvault + Kanban into a readable cockpit.</p>
+      <div class="lane"><div class="label">Inputs</div><div><ul><li>Project note frontmatter + live work sections</li><li>Kanban tasks/comments/status</li><li>CRM/entity notes for people/orgs</li><li>Artifact metadata links</li><li>Optional Gmail/Calendar/Drive evidence when explicitly requested</li></ul></div></div>
+      <div class="lane"><div class="label">Output</div><div><ul><li>Status, blockers, owner map, next actions</li><li>Timeline/deadlines</li><li>People/entity graph</li><li>Evidence links</li><li>Safe action buttons: create task, comment, mark reviewed, request approval</li></ul></div></div>
+    </article>
+  </section>
+
+  <section class="card">
+    <h2>Starter dashboards</h2>
+    <div class="grid cols-2">
+      <article class="step">
+        <p class="eyebrow">HTV cockpit</p>
+        <h3>Event execution, not more planning soup</h3>
+        <div class="status"></div>
+        <ul>
+          <li>Live blockers: print/logos, dinner, photo/video owner, ops owner confirmation, CSUB SEC payment/vendorization, press-release approval.</li>
+          <li>Entity layer: Justin, Jonathan, Tabari, Gael, Daniel, BC MESA, sponsors.</li>
+          <li>Key actions: create/check owner-lock tasks, prepare approval packet, mark press-release decision.</li>
+        </ul>
+      </article>
+      <article class="step">
+        <p class="eyebrow">Wedding cockpit</p>
+        <h3>Vendor/payment/decision tracker for two humans</h3>
+        <div class="status"></div>
+        <ul>
+          <li>Live blockers: Gabe check logistics, Matinae serif proof, Kimberly/design comments, Mariachi/Celene path, website logistics polish.</li>
+          <li>Entity layer: Jacqueline, Colleen, Gabe, Kimberly, Jenae/Matinae, Mariachi, Celene.</li>
+          <li>Key actions: choose option, generate follow-up draft, create reminder, record waiting-on-vendor state.</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <section class="card action">
+    <h2>Implementation sequence I’d run</h2>
+    <label class="check"><input type="checkbox" data-key="phase1"><span><b>Phase 1 — client interactivity + metadata</b><br>Document that artifacts may include JS; add project/tags/pinned/expires metadata and richer home filters.</span></label>
+    <label class="check"><input type="checkbox" data-key="phase2"><span><b>Phase 2 — archive lifecycle</b><br>Add archive/restore/prune dry-run, hide archived from home, archive view, and age-based cleanup candidates.</span></label>
+    <label class="check"><input type="checkbox" data-key="phase3"><span><b>Phase 3 — project dashboard generator</b><br>Build <code>artifactd project-dashboard --project htv|wedding</code> using Skyvault + Kanban + artifact metadata.</span></label>
+    <label class="check"><input type="checkbox" data-key="phase4"><span><b>Phase 4 — safe action endpoint</b><br>Add capability registry, CSRF/session checks, audit log, and start with Kanban comment/create-task only.</span></label>
+    <label class="check"><input type="checkbox" data-key="phase5"><span><b>Phase 5 — Echo/Jacqueline visual workflows</b><br>Presentation review boards, website edit previews, event status boards, and Asana-friendly summary surfaces.</span></label>
+  </section>
+
+  <section class="card warn">
+    <h2>Other high-leverage ideas</h2>
+    <ul>
+      <li><b>Artifact lineage:</b> “this dashboard was generated from these notes/tasks/emails at this time.” Prevents stale pretty dashboards from lying.</li>
+      <li><b>Review packets:</b> one-click shareable packet for “Jacqueline, review these 3 decisions,” with links and visual options.</li>
+      <li><b>Staleness badges:</b> red/yellow/green based on source age and unresolved blockers.</li>
+      <li><b>Artifact inbox:</b> artifacts needing human review, grouped by person/project.</li>
+      <li><b>Decision capture:</b> buttons that record “approved / rejected / needs changes” as Kanban comments, not just local checkbox state.</li>
+      <li><b>Template catalog:</b> presentation storyboard, website before/after, event run-of-show, project cockpit, vendor decision board.</li>
+      <li><b>Mobile-first mode:</b> because a lot of personal/admin review happens on the couch, not in a terminal like a gremlin.</li>
+    </ul>
+  </section>
+
+  <p class="footer">Generated as an artifact because this is exactly the kind of thing chat is bad at holding. Source truth stays in Skyvault/Kanban; this is the review surface.</p>
+</main>
+<script>
+  document.querySelectorAll('.tab').forEach(btn=>btn.addEventListener('click',()=>{
+    document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+    btn.classList.add('active'); document.getElementById(btn.dataset.tab).classList.add('active');
+  }));
+  document.querySelectorAll('input[type="checkbox"][data-key]').forEach(box=>{
+    const key='artifactd-roadmap:'+box.dataset.key; box.checked=localStorage.getItem(key)==='1';
+    box.addEventListener('change',()=>localStorage.setItem(key,box.checked?'1':'0'));
+  });
+</script>
+</body>
+</html>

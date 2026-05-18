@@ -74,6 +74,29 @@ def test_homepage_lists_artifacts_with_descriptions_and_search(tmp_path: Path):
     assert "Website Preview" not in filtered.text
 
 
+def test_homepage_hides_archived_artifacts_and_archive_page_lists_them(tmp_path: Path):
+    active = tmp_path / "active.html"
+    active.write_text("<h1>Active</h1>", encoding="utf-8")
+    old = tmp_path / "old.html"
+    old.write_text("<h1>Old</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    store.deploy(active, slug="active", title="Active Artifact")
+    store.deploy(old, slug="old", title="Old Artifact")
+    store.archive("old")
+    client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
+
+    home = client.get("/")
+    archive = client.get("/archive")
+
+    assert home.status_code == 200
+    assert "Active Artifact" in home.text
+    assert "Old Artifact" not in home.text
+    assert archive.status_code == 200
+    assert "Archived artifacts" in archive.text
+    assert "Old Artifact" in archive.text
+    assert "Active Artifact" not in archive.text
+
+
 def test_interactive_gog_endpoint_requires_artifact_password(tmp_path: Path):
     source = tmp_path / "reauth.html"
     source.write_text("<h1>Reauth</h1>", encoding="utf-8")

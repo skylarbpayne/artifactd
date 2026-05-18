@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import typer
 
@@ -14,6 +15,7 @@ app = typer.Typer(help="Deploy and serve tiny static HTML artifacts.")
 _home_option = typer.Option(Path(os.environ.get("ARTIFACTD_HOME", "~/.hermes/artifacts")).expanduser(), "--home", help="Artifact storage home.")
 _public_base_option = typer.Option(os.environ.get("ARTIFACTD_PUBLIC_BASE_URL"), "--public-base-url", help="Public HTTPS base URL, e.g. https://artifacts.example.com")
 _port_option = typer.Option(8787, "--port", help="Local server port.")
+_status_option = typer.Option("active", "--status", help="Artifact status filter: active, archived, or all.")
 
 
 @app.callback()
@@ -29,11 +31,14 @@ def deploy(
     title: Optional[str] = typer.Option(None, "--title", help="Display title."),
     description: Optional[str] = typer.Option(None, "--description", "-d", help="Short description used on the artifacts home page and search."),
     password: Optional[str] = typer.Option(None, "--password", help="Protect artifact with this password."),
+    capability: Optional[List[str]] = typer.Option(None, "--capability", help="Allow a named server-side action capability. Repeat for multiple."),
+    pinned: bool = typer.Option(False, "--pinned", help="Pin artifact so archive/prune will not move it."),
+    expires_at: Optional[int] = typer.Option(None, "--expires-at", help="Unix timestamp when prune should archive/delete this artifact."),
     port: int = _port_option,
 ):
     store = ArtifactStore(ctx.obj["home"])
-    artifact = store.deploy(source, slug=slug, title=title, description=description, password=password)
-    visibility = "protected" if artifact.has_password else "public"
+    artifact = store.deploy(source, slug=slug, title=title, description=description, password=password, capabilities=capability, pinned=pinned, expires_at=expires_at)
+    visibility = _visibility(artifact)
     typer.echo(f"deployed {artifact.slug} ({visibility})")
     typer.echo(f"local_url={_local_url(artifact.slug, port)}")
     if ctx.obj.get("public_base_url"):
@@ -45,18 +50,24 @@ def list_artifacts(
     ctx: typer.Context,
     port: int = _port_option,
     query: str = typer.Option("", "--query", "-q", help="Filter by title, slug, or description."),
+    status: str = _status_option,
 ):
     store = ArtifactStore(ctx.obj["home"])
-    artifacts = list(store.search(query) if query else store.list())
+    artifacts = list(store.search(query, status=status) if query else store.list(status=status))
     if not artifacts:
         typer.echo("no artifacts deployed")
         return
     for artifact in artifacts:
-        visibility = "protected" if artifact.has_password else "public"
         urls = [_local_url(artifact.slug, port)]
         if ctx.obj.get("public_base_url"):
             urls.append(_public_url(ctx.obj["public_base_url"], artifact.slug))
-        fields = [artifact.slug, visibility]
+        fields = [artifact.slug, artifact.status, _visibility(artifact)]
+        if artifact.pinned:
+            fields.append("pinned")
+        if artifact.expires_at is not None:
+            fields.append(f"expires_at={artifact.expires_at}")
+        if artifact.capabilities:
+            fields.append("actions=" + ",".join(artifact.capabilities))
         if artifact.title:
             fields.append(artifact.title)
         if artifact.description:
@@ -85,12 +96,49 @@ def describe(
     slug: str,
     title: Optional[str] = typer.Option(None, "--title", help="Updated display title."),
     description: Optional[str] = typer.Option(None, "--description", "-d", help="Updated searchable description."),
+    pinned: Optional[bool] = typer.Option(None, "--pinned/--unpinned", help="Pin or unpin artifact."),
+    expires_at: Optional[int] = typer.Option(None, "--expires-at", help="Updated Unix expiration timestamp."),
+    clear_expires_at: bool = typer.Option(False, "--clear-expires-at", help="Remove expiration timestamp."),
 ):
-    if title is None and description is None:
-        raise typer.BadParameter("provide --title, --description, or both")
+    if title is None and description is None and pinned is None and expires_at is None and not clear_expires_at:
+        raise typer.BadParameter("provide --title, --description, --pinned/--unpinned, --expires-at, or --clear-expires-at")
     store = ArtifactStore(ctx.obj["home"])
-    artifact = store.update_metadata(slug, title=title, description=description)
+    artifact = store.update_metadata(slug, title=title, description=description, pinned=pinned, expires_at=expires_at, clear_expires_at=clear_expires_at)
     typer.echo(f"updated {artifact.slug}")
+
+
+@app.command()
+def archive(ctx: typer.Context, slug: str):
+    store = ArtifactStore(ctx.obj["home"])
+    before = store.get(slug)
+    artifact = store.archive(slug)
+    if before and before.pinned:
+        typer.echo(f"skipped {artifact.slug} (pinned)")
+    else:
+        typer.echo(f"archived {artifact.slug}")
+
+
+@app.command()
+def restore(ctx: typer.Context, slug: str):
+    store = ArtifactStore(ctx.obj["home"])
+    artifact = store.restore(slug)
+    typer.echo(f"restored {artifact.slug}")
+
+
+@app.command()
+def prune(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(True, "--dry-run/--apply", help="Preview prune actions unless --apply is used."),
+    now: Optional[int] = typer.Option(None, "--now", help="Unix timestamp override for tests/manual checks."),
+):
+    store = ArtifactStore(ctx.obj["home"])
+    report = store.prune(now=now or int(time.time()), dry_run=dry_run)
+    if not report:
+        typer.echo("nothing to prune")
+        return
+    prefix = "would " if dry_run else ""
+    for item in report:
+        typer.echo(f"{prefix}{item['action']} {item['slug']}: {item['reason']}")
 
 
 @app.command()
@@ -133,3 +181,7 @@ def _local_url(slug: str, port: int) -> str:
 
 def _public_url(base_url: str, slug: str) -> str:
     return f"{base_url}/{slug}"
+
+
+def _visibility(artifact) -> str:
+    return "protected" if artifact.has_password else "public"

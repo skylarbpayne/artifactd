@@ -80,3 +80,68 @@ def test_update_metadata_changes_title_and_description_without_redeploying(tmp_p
     assert updated.title == "Agora Site Preview"
     assert updated.description == "Before and after homepage edits"
     assert [artifact.slug for artifact in store.search("homepage")] == ["site"]
+
+
+def test_archive_restore_and_search_filters_active_by_default(tmp_path: Path):
+    source = tmp_path / "site.html"
+    source.write_text("<h1>Site</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    store.deploy(source, slug="site", title="Site")
+
+    archived = store.archive("site")
+
+    assert archived.status == "archived"
+    assert store.get("site").status == "archived"
+    assert [artifact.slug for artifact in store.list()] == []
+    assert [artifact.slug for artifact in store.list(status="archived")] == ["site"]
+    assert [artifact.slug for artifact in store.search("site")] == []
+
+    restored = store.restore("site")
+
+    assert restored.status == "active"
+    assert [artifact.slug for artifact in store.search("site")] == ["site"]
+
+
+def test_pinned_artifacts_cannot_be_archived_or_pruned(tmp_path: Path):
+    source = tmp_path / "keep.html"
+    source.write_text("<h1>Keep</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    store.deploy(source, slug="keep", pinned=True, expires_at=10)
+
+    archived = store.archive("keep")
+    report = store.prune(now=20, dry_run=False)
+
+    assert archived.status == "active"
+    assert archived.pinned is True
+    assert report == [{"slug": "keep", "action": "skip", "reason": "pinned"}]
+    assert store.get("keep") is not None
+    assert store.get("keep").status == "active"
+
+
+def test_prune_archives_expired_active_artifacts_before_deleting(tmp_path: Path):
+    public_source = tmp_path / "public.html"
+    public_source.write_text("<h1>Public</h1>", encoding="utf-8")
+    protected_source = tmp_path / "protected.html"
+    protected_source.write_text("<h1>Protected</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    store.deploy(public_source, slug="public", expires_at=10)
+    store.deploy(protected_source, slug="protected", password="secret", expires_at=10)
+    dry_run = store.prune(now=20, dry_run=True)
+    applied = store.prune(now=20, dry_run=False)
+
+    assert dry_run == [
+        {"slug": "protected", "action": "archive", "reason": "expired"},
+        {"slug": "public", "action": "archive", "reason": "expired"},
+    ]
+    assert applied == dry_run
+    assert store.get("public").status == "archived"
+    assert store.get("protected").status == "archived"
+
+    second_pass = store.prune(now=20, dry_run=False)
+
+    assert second_pass == [
+        {"slug": "protected", "action": "skip", "reason": "protected"},
+        {"slug": "public", "action": "delete", "reason": "expired archived"},
+    ]
+    assert store.get("public") is None
+    assert store.get("protected") is not None

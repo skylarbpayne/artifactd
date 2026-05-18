@@ -6,9 +6,11 @@ Tiny local artifact server for agent-produced HTML artifacts.
 
 - Deploy a single `.html` file or a directory with `index.html`.
 - Serve artifacts locally from SQLite metadata + static files.
-- Browse artifacts from a searchable home page.
-- Store searchable titles and descriptions for each artifact.
+- Browse active artifacts from a searchable home page, with archived artifacts separated at `/archive`.
+- Store searchable titles, descriptions, lifecycle status, pinning, expiration metadata, and explicit action capabilities for each artifact.
 - Protect each artifact with its own password.
+- Allow browser-side interactivity in artifacts: JS, filters, localStorage, forms, and visual review controls.
+- Expose a small safe server-action layer for protected artifacts only (`/{slug}/_actions`) with CSRF, explicit capabilities, validation, and audit logs.
 - Expose the local server through Cloudflare Tunnel.
 
 ## Install for development
@@ -35,15 +37,26 @@ ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy 
 # Deploy a protected artifact
 ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./dist --slug investor-memo --title "Investor Memo" --description "Protected investor memo review surface" --password "secret"
 
+# Deploy a protected action-capable artifact
+ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./dashboard.html --slug project-dashboard --title "Project Dashboard" --description "Protected project command surface" --password "secret" --capability artifact.describe --capability artifact.archive --capability kanban.comment
+
 # Manage artifacts
 artifactd list
+artifactd list --status archived
 artifactd describe demo --title "Demo v2" --description "Updated searchable description"
+artifactd describe demo --pinned --expires-at 1798761600
+artifactd archive demo
+artifactd restore demo
+artifactd prune --dry-run
+artifactd prune --apply
 artifactd protect demo --password "new-secret"
 artifactd unprotect demo
 artifactd delete demo
 ```
 
-When `ARTIFACTD_PUBLIC_BASE_URL` or `--public-base-url` is set, deploy/list also prints the public HTTPS URL. The root path (`/`) is a searchable artifact home page; search matches slug, title, and description.
+When `ARTIFACTD_PUBLIC_BASE_URL` or `--public-base-url` is set, deploy/list also prints the public HTTPS URL. The root path (`/`) is a searchable active-artifact home page; `/archive` lists archived artifacts. Search matches slug, title, and description.
+
+`prune --dry-run` previews lifecycle actions. `prune --apply` archives expired active artifacts first, skips pinned artifacts, and will not delete protected artifacts automatically; expired public artifacts are only deletable after they are already archived.
 
 Default storage lives at:
 
@@ -105,6 +118,60 @@ Then artifacts are available as:
 https://artifacts.skylarbpayne.com/<slug>
 ```
 
+## Interactivity model
+
+Artifacts can use normal browser interactivity freely: JavaScript, tabs, filters, calculators, annotations, localStorage checklists, and form UX. That is still static artifact code running in the browser.
+
+For server-side effects, use the explicit capability layer:
+
+```bash
+artifactd deploy ./dashboard.html \
+  --slug project-dashboard \
+  --password "secret" \
+  --capability artifact.describe \
+  --capability artifact.archive \
+  --capability kanban.comment \
+  --capability kanban.create_task
+```
+
+The protected artifact can then fetch:
+
+```text
+GET  /<slug>/_actions
+POST /<slug>/_actions/<capability>
+```
+
+Current executable capabilities:
+
+- `artifact.describe` — update title/description metadata.
+- `artifact.archive` — archive the current artifact.
+- `kanban.comment` — append to a specific Hermes Kanban task.
+- `kanban.create_task` — create a Hermes Kanban task with explicit assignee/parents/priority.
+
+`draft.email` exists only as an approval-gated placeholder and returns `approval required`. Sends, publishing, scheduling, purchases, and credentials stay outside direct artifact execution.
+
+## Project dashboard generator
+
+The repo includes a static cockpit generator for recurring project surfaces. It reads Skyvault project notes, Hermes Kanban tasks, artifact metadata, and CRM/entity wikilinks, then writes a deployable multi-page directory. Skyvault/Kanban stay truth; the generated pages are the visual/action surface.
+
+```bash
+cd /Users/skylarpayne/artifactd
+. .venv/bin/activate
+python scripts/project_dashboard_generator.py \
+  --out dist/project-dashboards \
+  --deploy \
+  --password "$(cat /path/to/dashboard-password)"
+```
+
+Default output/deploy target:
+
+```text
+dist/project-dashboards/index.html
+https://artifacts.skylarbpayne.com/project-dashboards
+```
+
+Initial dashboards are Hack the Valley and Our Wedding. The deployed artifact is protected and pinned by default when generated with `--deploy`.
+
 ## Echo / Agora Comms artifact surface
 
 Echo uses the same `artifactd` codebase with isolated storage and a separate Cloudflare Tunnel:
@@ -140,8 +207,9 @@ sudo scripts/install-echo-launchdaemons.sh
 - Deploy is local CLI only in this MVP. There is no public deploy API.
 - Passwords are stored as PBKDF2-SHA256 hashes with random salts.
 - Artifact auth uses signed HttpOnly cookies scoped to the artifact path.
+- Server-side action capabilities are disabled unless explicitly enabled on a protected artifact; every action requires artifact auth + CSRF and writes an audit row with a payload hash, not raw submitted content.
 - Slugs are sanitized and file serving is constrained to the artifact root.
-- Static files only. No server-side execution inside artifacts.
+- Artifact HTML may run browser-side JavaScript. Server-side execution is limited to the fixed capability registry; there is no arbitrary generated-code execution and no public deploy API.
 
 ## Test
 

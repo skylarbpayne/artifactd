@@ -110,3 +110,58 @@ def test_cli_describe_updates_existing_artifact_metadata(tmp_path: Path):
     assert "updated demo" in described.output
     assert "Demo Preview" in listed.output
     assert "Visual review board for Jacqueline" in listed.output
+
+
+def test_cli_deploy_accepts_action_capabilities(tmp_path: Path):
+    runner = CliRunner()
+    source = tmp_path / "demo.html"
+    source.write_text("<h1>Demo</h1>", encoding="utf-8")
+    home = tmp_path / "home"
+
+    deployed = runner.invoke(
+        app,
+        [
+            "--home",
+            str(home),
+            "deploy",
+            str(source),
+            "--slug",
+            "demo",
+            "--password",
+            "secret",
+            "--capability",
+            "artifact.describe",
+            "--capability",
+            "kanban.comment",
+        ],
+    )
+    listed = runner.invoke(app, ["--home", str(home), "list"])
+
+    assert deployed.exit_code == 0
+    assert "actions=artifact.describe,kanban.comment" in listed.output
+
+
+def test_cli_archive_restore_list_filters_and_prune_dry_run(tmp_path: Path):
+    runner = CliRunner()
+    source = tmp_path / "demo.html"
+    source.write_text("<h1>Demo</h1>", encoding="utf-8")
+    home = tmp_path / "home"
+    runner.invoke(app, ["--home", str(home), "deploy", str(source), "--slug", "demo", "--expires-at", "10"])
+
+    archived = runner.invoke(app, ["--home", str(home), "archive", "demo"])
+    active_list = runner.invoke(app, ["--home", str(home), "list"])
+    archive_list = runner.invoke(app, ["--home", str(home), "list", "--status", "archived"])
+    restored = runner.invoke(app, ["--home", str(home), "restore", "demo"])
+    pruned = runner.invoke(app, ["--home", str(home), "prune", "--dry-run", "--now", "20"])
+
+    assert archived.exit_code == 0
+    assert "archived demo" in archived.output
+    assert active_list.exit_code == 0
+    assert "no artifacts deployed" in active_list.output
+    assert archive_list.exit_code == 0
+    assert "demo" in archive_list.output
+    assert "archived" in archive_list.output
+    assert restored.exit_code == 0
+    assert "restored demo" in restored.output
+    assert pruned.exit_code == 0
+    assert "would archive demo: expired" in pruned.output

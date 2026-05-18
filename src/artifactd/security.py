@@ -62,6 +62,39 @@ def verify_artifact_cookie(slug: str, cookie: Optional[str], secret: str, *, max
         return False
 
 
+def sign_csrf_token(slug: str, session_cookie: str, secret: str, *, now: Optional[int] = None) -> str:
+    if not slug or not session_cookie or not secret:
+        raise ValueError("slug, session cookie, and secret are required")
+    timestamp = int(now or time.time())
+    session_digest = hashlib.sha256(session_cookie.encode("utf-8")).hexdigest()
+    payload = f"{slug}|{timestamp}|{session_digest}"
+    signature = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{timestamp}|{signature}"
+
+
+def verify_csrf_token(
+    slug: str,
+    token: Optional[str],
+    session_cookie: Optional[str],
+    secret: str,
+    *,
+    max_age_seconds: int = 60 * 60 * 8,
+) -> bool:
+    if not slug or not token or not session_cookie or not secret:
+        return False
+    try:
+        timestamp_raw, signature = token.split("|", 1)
+        timestamp = int(timestamp_raw)
+        if time.time() - timestamp > max_age_seconds:
+            return False
+        session_digest = hashlib.sha256(session_cookie.encode("utf-8")).hexdigest()
+        payload = f"{slug}|{timestamp}|{session_digest}"
+        expected = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(signature, expected)
+    except Exception:
+        return False
+
+
 def _b64(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
