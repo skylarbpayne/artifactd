@@ -1,0 +1,10 @@
+# Copy to ~/.cloudflared/artifacts.yml after creating a named tunnel.
+# Then fill in the tunnel UUID and credentials file path reported by cloudflared.
+
+tunnel: <tunnel-uuid>
+credentials-file: /Users/skylarpayne/.cloudflared/<tunnel-uuid>.json
+
+ingress:
+  - hostname: artifacts.skylarpayne.com
+    service: http://127.0.0.1:8787
+  - service: http_status:404
