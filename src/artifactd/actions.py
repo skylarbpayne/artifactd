@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -27,9 +28,12 @@ class Capability:
 
 
 class KanbanExecutor:
+    def __init__(self, profile: Optional[str] = None):
+        self.profile = profile or _default_profile()
+
     def comment(self, task_id: str, body: str) -> dict[str, Any]:
         completed = subprocess.run(
-            ["hermes", "-p", "palmer", "kanban", "comment", task_id, body],
+            ["hermes", "-p", self.profile, "kanban", "comment", task_id, body],
             check=True,
             capture_output=True,
             text=True,
@@ -46,7 +50,7 @@ class KanbanExecutor:
         parents: Optional[list[str]] = None,
         priority: Optional[int] = None,
     ) -> dict[str, Any]:
-        cmd = ["hermes", "-p", "palmer", "kanban", "create", title, "--assignee", assignee]
+        cmd = ["hermes", "-p", self.profile, "kanban", "create", title, "--assignee", assignee]
         if body:
             cmd.extend(["--body", body])
         for parent in parents or []:
@@ -151,16 +155,38 @@ def _require_action_session(store: ArtifactStore, secret: str, slug: str, reques
         raise HTTPException(status_code=404, detail="artifact not found")
     if artifact.is_archived:
         raise HTTPException(status_code=410, detail="artifact is archived")
-    if not artifact.password_hash:
-        raise HTTPException(status_code=403, detail="action capabilities require a protected artifact")
-    session_cookie = request.cookies.get(_cookie_name(artifact.slug))
-    if not verify_artifact_cookie(artifact.slug, session_cookie, secret):
-        raise HTTPException(status_code=401, detail="password required")
+    if artifact.uses_profile_auth:
+        session_cookie = request.cookies.get(_workspace_cookie_name())
+        if not verify_artifact_cookie("__workspace__", session_cookie, secret):
+            raise HTTPException(status_code=401, detail="workspace password required")
+    elif artifact.password_hash:
+        session_cookie = request.cookies.get(_cookie_name(artifact.slug))
+        if not verify_artifact_cookie(artifact.slug, session_cookie, secret):
+            raise HTTPException(status_code=401, detail="password required")
+    else:
+        raise HTTPException(status_code=403, detail="action capabilities require a protected artifact or workspace session")
     return artifact, session_cookie or ""
 
 
 def _cookie_name(slug: str) -> str:
     return f"artifactd_auth_{slug.replace('-', '_')}"
+
+
+def _workspace_cookie_name() -> str:
+    return "artifactd_workspace_auth"
+
+
+def _default_profile() -> str:
+    for key in ("ARTIFACTD_PROFILE", "HERMES_PROFILE"):
+        value = os.environ.get(key)
+        if value:
+            return value
+    hermes_home = os.environ.get("HERMES_HOME")
+    if hermes_home:
+        name = str(hermes_home).rstrip("/").split("/")[-1]
+        if name:
+            return name
+    return "default"
 
 
 def _artifact_capabilities(artifact: Artifact) -> list[Capability]:

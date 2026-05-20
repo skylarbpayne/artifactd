@@ -8,3 +8,18 @@ build/
 *.egg-info/
 .DS_Store
 .artifactd-smoke/
+
+# Local runtime state / secrets
+.env
+*.db
+*.sqlite
+*.sqlite3
+.cookie-secret
+*password*
+workspace-secret
+workspace-shares/
+workspaces/
+artifacts/
+
+# Throwaway browser/editor spikes can be large and dependency-heavy.
+spikes/

@@ -8,7 +8,8 @@ Tiny local artifact server for agent-produced HTML artifacts.
 - Serve artifacts locally from SQLite metadata + static files.
 - Browse active artifacts from a searchable home page, with archived artifacts separated at `/archive`.
 - Store searchable titles, descriptions, lifecycle status, pinning, expiration metadata, and explicit action capabilities for each artifact.
-- Protect each artifact with its own password.
+- Protect artifacts with either legacy per-artifact passwords or the newer profile/workspace password session.
+- Register generated workspace “Things” for Hermes Home-style open/share/update/pin/archive flows.
 - Allow browser-side interactivity in artifacts: JS, filters, localStorage, forms, and visual review controls.
 - Expose a small safe server-action layer for protected artifacts only (`/{slug}/_actions`) with CSRF, explicit capabilities, validation, and audit logs.
 - Expose the local server through Cloudflare Tunnel.
@@ -73,6 +74,55 @@ ARTIFACTD_HOME=/path/to/artifacts artifactd list
 # or
 artifactd --home /path/to/artifacts list
 ```
+
+## Hermes Workspaces seed
+
+Workspaces are the profile-scoped path toward “one Hermes Home for things the agent made.” This is still an `artifactd` seed, not the final Hermes plugin/dashboard integration, but it is cloneable and smoke-testable.
+
+```bash
+# From a clone or this checkout
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e '.[dev]'
+
+# Create/check a profile-scoped workspace home without touching production state
+TMPDIR=$(mktemp -d)
+artifactd workspaces smoke --profile echo --hermes-root "$TMPDIR/.hermes" --password "dev-only"
+artifactd workspaces status --profile echo --hermes-root "$TMPDIR/.hermes"
+artifactd workspaces start --profile echo --hermes-root "$TMPDIR/.hermes" --port 8788
+```
+
+The default profile layout is:
+
+```text
+~/.hermes/profiles/<profile>/workspaces/
+├── artifacts.db
+├── sites/<thing-slug>/index.html
+└── .smoke-source/            # only created by smoke tests
+```
+
+Useful commands:
+
+```bash
+artifactd workspaces install --profile palmer --password "<store outside git>"
+artifactd workspaces status --profile palmer
+artifactd workspaces start --profile palmer --port 8787
+artifactd --home ~/.hermes/profiles/palmer/workspaces serve --profile palmer --port 8787
+```
+
+Current Workspaces behavior:
+
+- profile names are validated before paths are derived;
+- `--hermes-root <root>` maps to `<root>/profiles/<profile>`;
+- generated Things default to profile/workspace auth;
+- one workspace session can unlock profile-auth Things;
+- single-Thing share override tokens are available for explicit sharing;
+- legacy custom-password artifacts remain compatible;
+- Home exposes Open, Share, Update, Pin, Requires action, and Archive controls;
+- `GET /_workspace/things` returns dashboard-friendly buckets/counts.
+
+Next integration layer is still TODO: wrap this as Hermes profile commands/dashboard/plugin plumbing so users can run `hermes -p <profile> workspaces ...` instead of calling `artifactd` directly.
 
 ## Cloudflare Tunnel
 

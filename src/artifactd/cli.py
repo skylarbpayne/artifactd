@@ -9,8 +9,11 @@ import typer
 
 from .server import create_app
 from .store import ArtifactStore
+from .workspaces import resolve_workspace_home
 
 app = typer.Typer(help="Deploy and serve tiny static HTML artifacts.")
+workspaces_app = typer.Typer(help="Install, inspect, and smoke-test Hermes Workspaces for a profile.")
+app.add_typer(workspaces_app, name="workspaces")
 
 _home_option = typer.Option(Path(os.environ.get("ARTIFACTD_HOME", "~/.hermes/artifacts")).expanduser(), "--home", help="Artifact storage home.")
 _public_base_option = typer.Option(os.environ.get("ARTIFACTD_PUBLIC_BASE_URL"), "--public-base-url", help="Public HTTPS base URL, e.g. https://artifacts.example.com")
@@ -21,6 +24,83 @@ _status_option = typer.Option("active", "--status", help="Artifact status filter
 @app.callback()
 def main(ctx: typer.Context, home: Path = _home_option, public_base_url: Optional[str] = _public_base_option):
     ctx.obj = {"home": home, "public_base_url": _normalize_base_url(public_base_url)}
+
+
+@workspaces_app.command("install")
+def workspaces_install(
+    profile: str = typer.Option(..., "--profile", help="Hermes profile name."),
+    hermes_root: Optional[Path] = typer.Option(None, "--hermes-root", help="Root Hermes home containing profiles/<name>."),
+    profile_home: Optional[Path] = typer.Option(None, "--profile-home", help="Explicit profile-scoped HERMES_HOME."),
+    password: Optional[str] = typer.Option(None, "--password", help="Set the default workspace password for this profile."),
+):
+    workspace_home = resolve_workspace_home(profile, hermes_root=hermes_root, profile_home=profile_home)
+    store = ArtifactStore(workspace_home)
+    if password:
+        store.set_workspace_password(password)
+    typer.echo(f"profile={profile}")
+    typer.echo(f"workspace_home={workspace_home}")
+    typer.echo("installed=true")
+    typer.echo(f"workspace_password_configured={str(store.workspace_password_configured()).lower()}")
+
+
+@workspaces_app.command("status")
+def workspaces_status(
+    profile: str = typer.Option(..., "--profile", help="Hermes profile name."),
+    hermes_root: Optional[Path] = typer.Option(None, "--hermes-root", help="Root Hermes home containing profiles/<name>."),
+    profile_home: Optional[Path] = typer.Option(None, "--profile-home", help="Explicit profile-scoped HERMES_HOME."),
+):
+    workspace_home = resolve_workspace_home(profile, hermes_root=hermes_root, profile_home=profile_home)
+    store = ArtifactStore(workspace_home)
+    typer.echo(f"profile={profile}")
+    typer.echo(f"workspace_home={workspace_home}")
+    typer.echo(f"workspace_password_configured={str(store.workspace_password_configured()).lower()}")
+    typer.echo(f"active_things={len(list(store.list(status='active')))}")
+    typer.echo(f"pinned_things={len(store.list_workspace_things(bucket='pinned'))}")
+    typer.echo(f"requires_action_things={len(store.list_workspace_things(bucket='requires-action'))}")
+
+
+@workspaces_app.command("start")
+def workspaces_start(
+    profile: str = typer.Option(..., "--profile", help="Hermes profile name."),
+    hermes_root: Optional[Path] = typer.Option(None, "--hermes-root", help="Root Hermes home containing profiles/<name>."),
+    profile_home: Optional[Path] = typer.Option(None, "--profile-home", help="Explicit profile-scoped HERMES_HOME."),
+    port: int = _port_option,
+):
+    workspace_home = resolve_workspace_home(profile, hermes_root=hermes_root, profile_home=profile_home)
+    typer.echo(f"profile={profile}")
+    typer.echo(f"workspace_home={workspace_home}")
+    typer.echo(f"serve_command=ARTIFACTD_PROFILE={profile} artifactd --home {workspace_home} serve --profile {profile} --port {port}")
+
+
+@workspaces_app.command("smoke")
+def workspaces_smoke(
+    profile: str = typer.Option(..., "--profile", help="Hermes profile name."),
+    hermes_root: Optional[Path] = typer.Option(None, "--hermes-root", help="Root Hermes home containing profiles/<name>."),
+    profile_home: Optional[Path] = typer.Option(None, "--profile-home", help="Explicit profile-scoped HERMES_HOME."),
+    password: str = typer.Option("workspace-smoke-password", "--password", help="Default workspace password to configure for the smoke."),
+):
+    workspace_home = resolve_workspace_home(profile, hermes_root=hermes_root, profile_home=profile_home)
+    store = ArtifactStore(workspace_home)
+    store.set_workspace_password(password)
+    smoke_dir = workspace_home / ".smoke-source"
+    smoke_dir.mkdir(parents=True, exist_ok=True)
+    smoke_html = smoke_dir / "index.html"
+    smoke_html.write_text(
+        "<!doctype html><html><body><h1>Hermes Workspaces smoke</h1><p>Profile-owned generated Thing.</p></body></html>",
+        encoding="utf-8",
+    )
+    thing = store.register_thing(
+        smoke_dir,
+        slug="hermes-workspaces-smoke",
+        title="Hermes Workspaces smoke",
+        description="Protected smoke Thing for profile-scoped Hermes Workspaces.",
+        capabilities=["artifact.describe"],
+    )
+    typer.echo(f"profile={profile}")
+    typer.echo(f"workspace_home={workspace_home}")
+    typer.echo(f"created {thing.slug}")
+    typer.echo(f"auth_mode={thing.auth_mode}")
+    typer.echo("status=ok")
 
 
 @app.command()
@@ -149,12 +229,19 @@ def delete(ctx: typer.Context, slug: str):
 
 
 @app.command()
-def serve(ctx: typer.Context, host: str = typer.Option("127.0.0.1", "--host"), port: int = _port_option):
+def serve(
+    ctx: typer.Context,
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = _port_option,
+    profile: Optional[str] = typer.Option(None, "--profile", help="Owning Hermes profile for workspace capability actions."),
+):
     import uvicorn
 
     cookie_secret = os.environ.get("ARTIFACTD_COOKIE_SECRET")
     if not cookie_secret:
         typer.secho("warning: ARTIFACTD_COOKIE_SECRET is unset; using dev-only cookie secret", fg=typer.colors.YELLOW, err=True)
+    if profile:
+        os.environ["ARTIFACTD_PROFILE"] = profile
     uvicorn.run(create_app(ctx.obj["home"], cookie_secret=cookie_secret), host=host, port=port)
 
 
@@ -184,4 +271,6 @@ def _public_url(base_url: str, slug: str) -> str:
 
 
 def _visibility(artifact) -> str:
+    if getattr(artifact, "uses_profile_auth", False):
+        return "protected(profile)"
     return "protected" if artifact.has_password else "public"

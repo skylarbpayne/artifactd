@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import shutil
 import sqlite3
 import time
@@ -9,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
-from .security import hash_password
+from .security import hash_password, verify_password
 
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
 
@@ -29,10 +30,17 @@ class Artifact:
     capabilities: tuple[str, ...] = ()
     pinned: bool = False
     expires_at: Optional[int] = None
+    auth_mode: str = "public"
+    requires_action: bool = False
+    share_token_hash: Optional[str] = None
 
     @property
     def has_password(self) -> bool:
         return bool(self.password_hash)
+
+    @property
+    def uses_profile_auth(self) -> bool:
+        return self.auth_mode == "profile"
 
     @property
     def is_archived(self) -> bool:
@@ -82,6 +90,8 @@ class ArtifactStore:
         capabilities: Optional[Sequence[str]] = None,
         pinned: bool = False,
         expires_at: Optional[int] = None,
+        auth_mode: Optional[str] = None,
+        requires_action: bool = False,
     ) -> Artifact:
         source = Path(source).expanduser().resolve()
         if not source.exists():
@@ -114,7 +124,9 @@ class ArtifactStore:
         now = int(time.time())
         existing = self.get(safe_slug)
         created_at = existing.created_at if existing else now
-        password_hash_value = hash_password(password) if password else (existing.password_hash if existing else None)
+        password_supplied = password is not None
+        password_hash_value = hash_password(password) if password_supplied else (existing.password_hash if existing else None)
+        next_auth_mode = _normalize_auth_mode(auth_mode, password_hash_value, existing.auth_mode if existing else None, password_supplied=password_supplied)
         artifact = Artifact(
             slug=safe_slug,
             title=title or (existing.title if existing else safe_slug),
@@ -129,16 +141,47 @@ class ArtifactStore:
             capabilities=tuple(capabilities) if capabilities is not None else (existing.capabilities if existing else ()),
             pinned=bool(pinned or (existing.pinned if existing else False)),
             expires_at=expires_at if expires_at is not None else (existing.expires_at if existing else None),
+            auth_mode=next_auth_mode,
+            requires_action=bool(requires_action or (existing.requires_action if existing else False)),
+            share_token_hash=existing.share_token_hash if existing else None,
         )
         self._upsert(artifact)
         return artifact
+
+    def register_thing(
+        self,
+        source: Path,
+        *,
+        slug: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        capabilities: Optional[Sequence[str]] = None,
+        requires_action: bool = False,
+        pinned: bool = False,
+        public: bool = False,
+        password: Optional[str] = None,
+    ) -> Artifact:
+        """Register an agent-generated Workspace Thing using profile auth by default."""
+
+        auth_mode = "public" if public else ("custom" if password else "profile")
+        return self.deploy(
+            source,
+            slug=slug,
+            title=title,
+            description=description,
+            password=password,
+            capabilities=capabilities,
+            pinned=pinned,
+            auth_mode=auth_mode,
+            requires_action=requires_action,
+        )
 
     def list(self, *, status: str = "active", include_archived: Optional[bool] = None) -> Iterable[Artifact]:
         where = _status_where(status, include_archived)
         with self._connect() as con:
             rows = con.execute(
                 f"""
-                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at
+                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash
                 FROM artifacts
                 {where}
                 ORDER BY updated_at DESC, slug ASC
@@ -155,7 +198,7 @@ class ArtifactStore:
         with self._connect() as con:
             rows = con.execute(
                 """
-                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at
+                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash
                 FROM artifacts
                 WHERE (lower(slug) LIKE ? OR lower(title) LIKE ? OR lower(description) LIKE ?)
                 """
@@ -172,7 +215,7 @@ class ArtifactStore:
         with self._connect() as con:
             row = con.execute(
                 """
-                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at
+                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash
                 FROM artifacts
                 WHERE slug = ?
                 """,
@@ -182,13 +225,13 @@ class ArtifactStore:
 
     def protect(self, slug: str, password: str) -> Artifact:
         artifact = self._require(slug)
-        updated = self._copy_artifact(artifact, updated_at=int(time.time()), password_hash=hash_password(password))
+        updated = self._copy_artifact(artifact, updated_at=int(time.time()), password_hash=hash_password(password), auth_mode="custom")
         self._upsert(updated)
         return updated
 
     def unprotect(self, slug: str) -> Artifact:
         artifact = self._require(slug)
-        updated = self._copy_artifact(artifact, updated_at=int(time.time()), password_hash=None)
+        updated = self._copy_artifact(artifact, updated_at=int(time.time()), password_hash=None, auth_mode="public")
         self._upsert(updated)
         return updated
 
@@ -221,11 +264,69 @@ class ArtifactStore:
         self._upsert(updated)
         return updated
 
-    def archive(self, slug: str, *, reason: str = "") -> Artifact:
+    def set_requires_action(self, slug: str, requires_action: bool) -> Artifact:
         artifact = self._require(slug)
-        if artifact.pinned:
+        updated = self._copy_artifact(artifact, updated_at=int(time.time()), requires_action=bool(requires_action))
+        self._upsert(updated)
+        return updated
+
+    def list_workspace_things(self, *, bucket: str = "active") -> list[Artifact]:
+        bucket = (bucket or "active").lower()
+        if bucket == "requires-action":
+            return [artifact for artifact in self.list(status="active") if artifact.requires_action]
+        if bucket == "pinned":
+            return [artifact for artifact in self.list(status="active") if artifact.pinned]
+        if bucket == "recent":
+            return list(self.list(status="active"))
+        if bucket == "archived":
+            return list(self.list(status="archived"))
+        if bucket in {"active", "all"}:
+            return list(self.list(status=bucket))
+        raise ValueError(f"invalid workspace bucket: {bucket}")
+
+    def create_share_override(self, slug: str, *, token: Optional[str] = None) -> str:
+        artifact = self._require(slug)
+        raw_token = token or secrets.token_urlsafe(24)
+        updated = self._copy_artifact(artifact, updated_at=int(time.time()), share_token_hash=hash_password(raw_token))
+        self._upsert(updated)
+        return raw_token
+
+    def verify_share_token(self, slug: str, token: Optional[str]) -> bool:
+        if not token:
+            return False
+        artifact = self.get(slug)
+        if not artifact or not artifact.share_token_hash:
+            return False
+        return verify_password(token, artifact.share_token_hash)
+
+    def get_setting(self, key: str) -> Optional[str]:
+        with self._connect() as con:
+            row = con.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._connect() as con:
+            con.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (key, value, int(time.time())),
+            )
+
+    def set_workspace_password(self, password: str) -> None:
+        self.set_setting("workspace_password_hash", hash_password(password))
+
+    def verify_workspace_password(self, password: str) -> bool:
+        encoded = self.get_setting("workspace_password_hash")
+        return bool(encoded and verify_password(password, encoded))
+
+    def workspace_password_configured(self) -> bool:
+        return bool(self.get_setting("workspace_password_hash"))
+
+    def archive(self, slug: str, *, reason: str = "", force: bool = False) -> Artifact:
+        artifact = self._require(slug)
+        if artifact.pinned and not force:
             return artifact
         now = int(time.time())
+
         updated = self._copy_artifact(
             artifact,
             status="archived",
@@ -375,7 +476,10 @@ class ArtifactStore:
                     archive_reason TEXT,
                     capabilities TEXT NOT NULL DEFAULT '[]',
                     pinned INTEGER NOT NULL DEFAULT 0,
-                    expires_at INTEGER
+                    expires_at INTEGER,
+                    auth_mode TEXT NOT NULL DEFAULT 'public',
+                    requires_action INTEGER NOT NULL DEFAULT 0,
+                    share_token_hash TEXT
                 )
                 """
             )
@@ -394,6 +498,21 @@ class ArtifactStore:
                 con.execute("ALTER TABLE artifacts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
             if "expires_at" not in columns:
                 con.execute("ALTER TABLE artifacts ADD COLUMN expires_at INTEGER")
+            if "auth_mode" not in columns:
+                con.execute("ALTER TABLE artifacts ADD COLUMN auth_mode TEXT NOT NULL DEFAULT 'public'")
+            if "requires_action" not in columns:
+                con.execute("ALTER TABLE artifacts ADD COLUMN requires_action INTEGER NOT NULL DEFAULT 0")
+            if "share_token_hash" not in columns:
+                con.execute("ALTER TABLE artifacts ADD COLUMN share_token_hash TEXT")
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS action_audit (
@@ -414,8 +533,8 @@ class ArtifactStore:
         with self._connect() as con:
             con.execute(
                 """
-                INSERT INTO artifacts (slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO artifacts (slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slug) DO UPDATE SET
                     title = excluded.title,
                     description = excluded.description,
@@ -427,7 +546,10 @@ class ArtifactStore:
                     archive_reason = excluded.archive_reason,
                     capabilities = excluded.capabilities,
                     pinned = excluded.pinned,
-                    expires_at = excluded.expires_at
+                    expires_at = excluded.expires_at,
+                    auth_mode = excluded.auth_mode,
+                    requires_action = excluded.requires_action,
+                    share_token_hash = excluded.share_token_hash
                 """,
                 (
                     artifact.slug,
@@ -443,6 +565,9 @@ class ArtifactStore:
                     json.dumps(list(artifact.capabilities)),
                     1 if artifact.pinned else 0,
                     artifact.expires_at,
+                    artifact.auth_mode,
+                    1 if artifact.requires_action else 0,
+                    artifact.share_token_hash,
                 ),
             )
 
@@ -461,6 +586,9 @@ class ArtifactStore:
             capabilities=_decode_capabilities(row["capabilities"]),
             pinned=bool(row["pinned"]),
             expires_at=row["expires_at"],
+            auth_mode=row["auth_mode"] or "public",
+            requires_action=bool(row["requires_action"]),
+            share_token_hash=row["share_token_hash"],
         )
 
     def _row_to_action_audit(self, row: sqlite3.Row) -> ActionAudit:
@@ -491,9 +619,31 @@ class ArtifactStore:
             "capabilities": artifact.capabilities,
             "pinned": artifact.pinned,
             "expires_at": artifact.expires_at,
+            "auth_mode": artifact.auth_mode,
+            "requires_action": artifact.requires_action,
+            "share_token_hash": artifact.share_token_hash,
         }
         values.update(changes)
         return Artifact(**values)
+
+
+def _normalize_auth_mode(
+    auth_mode: Optional[str],
+    password_hash_value: Optional[str],
+    existing_auth_mode: Optional[str],
+    *,
+    password_supplied: bool = False,
+) -> str:
+    if auth_mode is None:
+        if password_supplied:
+            return "custom"
+        return existing_auth_mode or ("custom" if password_hash_value else "public")
+    auth_mode = auth_mode.lower()
+    if auth_mode not in {"public", "profile", "custom"}:
+        raise ValueError(f"invalid auth mode: {auth_mode}")
+    if auth_mode == "custom" and not password_hash_value:
+        raise ValueError("custom auth mode requires a password")
+    return auth_mode
 
 
 def _status_where(status: str, include_archived: Optional[bool]) -> str:
