@@ -122,6 +122,25 @@ def workspaces_smoke(
     typer.echo("status=ok")
 
 
+@workspaces_app.command("import-legacy")
+def workspaces_import_legacy(
+    profile: str = typer.Option(..., "--profile", help="Hermes profile name."),
+    hermes_root: Optional[Path] = typer.Option(None, "--hermes-root", help="Root Hermes home containing profiles/<name>."),
+    profile_home: Optional[Path] = typer.Option(None, "--profile-home", help="Explicit profile-scoped HERMES_HOME."),
+    from_home: Path = typer.Option(..., "--from-home", exists=True, file_okay=False, help="Existing artifactd home to copy into this profile's Workspaces registry."),
+):
+    workspace_home = resolve_workspace_home(profile, hermes_root=hermes_root, profile_home=profile_home)
+    workspace_store = ArtifactStore(workspace_home)
+    legacy_store = ArtifactStore(from_home)
+    report = workspace_store.import_legacy_artifacts(legacy_store)
+    typer.echo(f"profile={profile}")
+    typer.echo(f"workspace_home={workspace_home}")
+    typer.echo(f"from_home={from_home}")
+    typer.echo(f"imported={report['imported']}")
+    typer.echo(f"updated={report['updated']}")
+    typer.echo(f"skipped={report['skipped']}")
+
+
 @workspaces_app.command("register")
 def workspaces_register(
     source: Path = typer.Argument(..., exists=True, help="HTML file or directory containing index.html."),

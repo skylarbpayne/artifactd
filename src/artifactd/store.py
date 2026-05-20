@@ -176,6 +176,46 @@ class ArtifactStore:
             requires_action=requires_action,
         )
 
+    def import_legacy_artifacts(self, legacy_store: "ArtifactStore") -> dict[str, int]:
+        """Copy legacy artifacts into this workspace registry without mutating the source."""
+
+        report = {"imported": 0, "updated": 0, "skipped": 0}
+        for artifact in legacy_store.list(status="all"):
+            if not artifact.path.exists():
+                report["skipped"] += 1
+                continue
+            destination = self.sites_dir / artifact.slug
+            tmp_dir = self.sites_dir / f".{artifact.slug}.import-tmp"
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir)
+            shutil.copytree(artifact.path, tmp_dir)
+            if destination.exists():
+                shutil.rmtree(destination)
+            tmp_dir.rename(destination)
+            existed = self.get(artifact.slug) is not None
+            self._upsert(
+                Artifact(
+                    slug=artifact.slug,
+                    title=artifact.title,
+                    description=artifact.description,
+                    path=destination,
+                    created_at=artifact.created_at,
+                    updated_at=artifact.updated_at,
+                    password_hash=artifact.password_hash,
+                    status=artifact.status,
+                    archived_at=artifact.archived_at,
+                    archive_reason=artifact.archive_reason,
+                    capabilities=artifact.capabilities,
+                    pinned=artifact.pinned,
+                    expires_at=artifact.expires_at,
+                    auth_mode=artifact.auth_mode,
+                    requires_action=artifact.requires_action,
+                    share_token_hash=artifact.share_token_hash,
+                )
+            )
+            report["updated" if existed else "imported"] += 1
+        return report
+
     def list(self, *, status: str = "active", include_archived: Optional[bool] = None) -> Iterable[Artifact]:
         where = _status_where(status, include_archived)
         with self._connect() as con:

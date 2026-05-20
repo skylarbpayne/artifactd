@@ -219,6 +219,55 @@ def test_workspaces_smoke_command_is_profile_aware_and_creates_protected_thing(t
     assert smoke.capabilities == ("artifact.describe",)
 
 
+def test_workspaces_import_legacy_copies_existing_artifacts_idempotently(tmp_path: Path):
+    runner = CliRunner()
+    legacy_home = tmp_path / "legacy-artifacts"
+    hermes_root = tmp_path / ".hermes"
+    public_source = tmp_path / "public.html"
+    public_source.write_text("<h1>Public Legacy</h1>", encoding="utf-8")
+    protected_dir = tmp_path / "protected-dir"
+    protected_dir.mkdir()
+    (protected_dir / "index.html").write_text("<h1>Protected Legacy</h1>", encoding="utf-8")
+    legacy = ArtifactStore(legacy_home)
+    legacy.deploy(public_source, slug="public-legacy", title="Public Legacy", description="old public", capabilities=["artifact.describe"], pinned=True)
+    legacy.deploy(protected_dir, slug="secret-legacy", title="Secret Legacy", description="old protected", password="opensesame", capabilities=["kanban.comment"])
+    legacy.archive("secret-legacy", reason="old archive", force=True)
+
+    args = [
+        "workspaces",
+        "import-legacy",
+        "--profile",
+        "echo",
+        "--hermes-root",
+        str(hermes_root),
+        "--from-home",
+        str(legacy_home),
+    ]
+    first = runner.invoke(app, args)
+    second = runner.invoke(app, args)
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert "imported=2" in first.output
+    assert "imported=0" in second.output
+    assert "updated=2" in second.output
+    workspace_home = hermes_root / "profiles" / "echo" / "workspaces"
+    workspace = ArtifactStore(workspace_home)
+    public = workspace.get("public-legacy")
+    secret = workspace.get("secret-legacy")
+    assert public.title == "Public Legacy"
+    assert public.description == "old public"
+    assert public.auth_mode == "public"
+    assert public.pinned is True
+    assert public.capabilities == ("artifact.describe",)
+    assert (workspace_home / "sites" / "public-legacy" / "index.html").read_text(encoding="utf-8") == "<h1>Public Legacy</h1>"
+    assert secret.status == "archived"
+    assert secret.archive_reason == "old archive"
+    assert secret.auth_mode == "custom"
+    assert secret.password_hash == legacy.get("secret-legacy").password_hash
+    assert (legacy_home / "sites" / "public-legacy" / "index.html").exists()
+
+
 def test_workspace_registry_endpoint_lists_home_buckets_after_profile_login(tmp_path: Path):
     source = tmp_path / "thing.html"
     source.write_text("<h1>Thing</h1>", encoding="utf-8")

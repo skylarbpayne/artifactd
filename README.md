@@ -117,7 +117,8 @@ Useful commands:
 artifactd workspaces install --profile palmer --password "<store outside git>"
 artifactd workspaces status --profile palmer
 artifactd workspaces home --profile palmer
-artifactd workspaces register ./dist/daily.html --profile palmer --slug daily --title "Daily"
+artifactd workspaces import-legacy --profile palmer --from-home /Users/skylarpayne/.hermes/artifacts
+artifactd workspaces register ./dist/daily.html --profile palmer --slug daily --title "Daily cockpit"
 artifactd workspaces install-plugin \
   --profile palmer \
   --runtime-path /Users/skylarpayne/artifactd/.venv/bin/artifactd \
@@ -134,6 +135,7 @@ Current Workspaces behavior:
 - `--hermes-root <root>` maps to `<root>/profiles/<profile>`;
 - generated Things default to profile/workspace auth;
 - `artifactd workspaces register` turns existing HTML files/directories into profile-auth Things;
+- `artifactd workspaces import-legacy` non-destructively copies an existing artifactd home into a profile Workspaces registry while preserving titles, descriptions, status, pinning, capabilities, and legacy auth metadata;
 - `artifactd workspaces install-plugin` writes a profile-local Hermes plugin wrapper under `$HERMES_HOME/plugins/artifactd_workspaces` and can enable it via `plugins.enabled`;
 - the package also exposes a `hermes_agent.plugins` entry point named `artifactd_workspaces` for pip-installed Hermes plugin discovery;
 - one workspace session can unlock profile-auth Things;
