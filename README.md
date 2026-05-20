@@ -7,7 +7,7 @@ Tiny local artifact server for agent-produced HTML artifacts.
 - Deploy a single `.html` file or a directory with `index.html`.
 - Serve artifacts locally from SQLite metadata + static files.
 - Browse active artifacts from a searchable home page, with archived artifacts separated at `/archive`.
-- Store searchable titles, descriptions, lifecycle status, pinning, expiration metadata, and explicit action capabilities for each artifact.
+- Store searchable titles, descriptions, tags, lifecycle status, pinning, expiration metadata, and explicit action capabilities for each artifact.
 - Protect artifacts with either legacy per-artifact passwords or the newer profile/workspace password session.
 - Register generated workspace “Things” for Hermes Home-style open/share/update/pin/archive flows.
 - Allow browser-side interactivity in artifacts: JS, filters, localStorage, forms, and visual review controls.
@@ -41,10 +41,14 @@ ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy 
 # Deploy a protected action-capable artifact
 ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./dashboard.html --slug project-dashboard --title "Project Dashboard" --description "Protected project command surface" --password "secret" --capability artifact.describe --capability artifact.archive --capability kanban.comment
 
+# Deploy with searchable tags
+ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./report.html --slug creative-report --title "Creative Report" --description "Creative QA rollup" --tag rollup --tag review-dashboard
+
 # Manage artifacts
 artifactd list
 artifactd list --status archived
 artifactd describe demo --title "Demo v2" --description "Updated searchable description"
+artifactd describe demo --tag rollup --tag review-dashboard
 artifactd describe demo --pinned --expires-at 1798761600
 artifactd archive demo
 artifactd restore demo
@@ -55,7 +59,7 @@ artifactd unprotect demo
 artifactd delete demo
 ```
 
-When `ARTIFACTD_PUBLIC_BASE_URL` or `--public-base-url` is set, deploy/list also prints the public HTTPS URL. The root path (`/`) is a searchable active-artifact home page; `/archive` lists archived artifacts. Search matches slug, title, and description.
+When `ARTIFACTD_PUBLIC_BASE_URL` or `--public-base-url` is set, deploy/list also prints the public HTTPS URL. The root path (`/`) is a searchable active-artifact home page; `/archive` lists archived artifacts. Search matches slug, title, description, and tags. Tags are normalized as slugs, de-duplicated, shown in list/card metadata, and can be replaced with repeated `artifactd describe <slug> --tag ...` options.
 
 `prune --dry-run` previews lifecycle actions. `prune --apply` archives expired active artifacts first, skips pinned artifacts, and will not delete protected artifacts automatically; expired public artifacts are only deletable after they are already archived.
 

@@ -244,6 +244,8 @@ def _index_page(
             meta.append(f"expires_at={artifact.expires_at}")
         if artifact.capabilities:
             meta.append("actions=" + ",".join(artifact.capabilities))
+        if artifact.tags:
+            meta.append("tags=" + ",".join(artifact.tags))
         if artifact.archive_reason:
             meta.append("reason=" + artifact.archive_reason)
         meta_html = f"<p class=\"meta\">{html.escape(' · '.join(meta))}</p>" if meta else ""
@@ -382,7 +384,7 @@ def _workspace_bucket(store: ArtifactStore, *, query: str = "", bucket: str = "a
     needle = query.strip().lower()
     if not needle:
         return things
-    return [thing for thing in things if needle in thing.slug.lower() or needle in thing.title.lower() or needle in (thing.description or "").lower()]
+    return [thing for thing in things if needle in thing.slug.lower() or needle in thing.title.lower() or needle in (thing.description or "").lower() or any(needle in tag for tag in thing.tags)]
 
 
 def _workspace_counts(store: ArtifactStore) -> dict[str, int]:
@@ -405,6 +407,7 @@ def _thing_payload(artifact: Artifact) -> dict[str, object]:
         "protected": artifact.has_password or artifact.uses_profile_auth,
         "pinned": artifact.pinned,
         "requires_action": artifact.requires_action,
+        "tags": list(artifact.tags),
         "capabilities": list(artifact.capabilities),
         "updated_at": artifact.updated_at,
         "path": f"/{artifact.slug}",

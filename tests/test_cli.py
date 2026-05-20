@@ -84,6 +84,35 @@ def test_cli_deploy_accepts_description_and_list_shows_it(tmp_path: Path):
     assert "Review board for homepage edits" in listed.output
 
 
+def test_cli_deploy_describe_and_list_support_tags(tmp_path: Path):
+    runner = CliRunner()
+    source = tmp_path / "demo.html"
+    source.write_text("<h1>Demo</h1>", encoding="utf-8")
+    home = tmp_path / "home"
+
+    deployed = runner.invoke(
+        app,
+        [
+            "--home",
+            str(home),
+            "deploy",
+            str(source),
+            "--slug",
+            "demo",
+            "--tag",
+            "csm-ads",
+            "--tag",
+            "current",
+        ],
+    )
+    described = runner.invoke(app, ["--home", str(home), "describe", "demo", "--tag", "creative-review", "--tag", "current"])
+    listed = runner.invoke(app, ["--home", str(home), "list"])
+
+    assert deployed.exit_code == 0
+    assert described.exit_code == 0
+    assert "tags=creative-review,current" in listed.output
+
+
 def test_cli_describe_updates_existing_artifact_metadata(tmp_path: Path):
     runner = CliRunner()
     source = tmp_path / "demo.html"

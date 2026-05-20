@@ -28,6 +28,7 @@ class Artifact:
     archived_at: Optional[int] = None
     archive_reason: Optional[str] = None
     capabilities: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
     pinned: bool = False
     expires_at: Optional[int] = None
     auth_mode: str = "public"
@@ -88,6 +89,7 @@ class ArtifactStore:
         description: Optional[str] = None,
         password: Optional[str] = None,
         capabilities: Optional[Sequence[str]] = None,
+        tags: Optional[Sequence[str]] = None,
         pinned: bool = False,
         expires_at: Optional[int] = None,
         auth_mode: Optional[str] = None,
@@ -139,6 +141,7 @@ class ArtifactStore:
             archived_at=None,
             archive_reason=None,
             capabilities=tuple(capabilities) if capabilities is not None else (existing.capabilities if existing else ()),
+            tags=_normalize_tags(tags) if tags is not None else (existing.tags if existing else ()),
             pinned=bool(pinned or (existing.pinned if existing else False)),
             expires_at=expires_at if expires_at is not None else (existing.expires_at if existing else None),
             auth_mode=next_auth_mode,
@@ -156,6 +159,7 @@ class ArtifactStore:
         title: Optional[str] = None,
         description: Optional[str] = None,
         capabilities: Optional[Sequence[str]] = None,
+        tags: Optional[Sequence[str]] = None,
         requires_action: bool = False,
         pinned: bool = False,
         public: bool = False,
@@ -171,6 +175,7 @@ class ArtifactStore:
             description=description,
             password=password,
             capabilities=capabilities,
+            tags=tags,
             pinned=pinned,
             auth_mode=auth_mode,
             requires_action=requires_action,
@@ -206,6 +211,7 @@ class ArtifactStore:
                     archived_at=artifact.archived_at,
                     archive_reason=artifact.archive_reason,
                     capabilities=artifact.capabilities,
+                    tags=artifact.tags,
                     pinned=artifact.pinned,
                     expires_at=artifact.expires_at,
                     auth_mode=artifact.auth_mode,
@@ -221,7 +227,7 @@ class ArtifactStore:
         with self._connect() as con:
             rows = con.execute(
                 f"""
-                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash
+                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, tags, pinned, expires_at, auth_mode, requires_action, share_token_hash
                 FROM artifacts
                 {where}
                 ORDER BY updated_at DESC, slug ASC
@@ -238,15 +244,15 @@ class ArtifactStore:
         with self._connect() as con:
             rows = con.execute(
                 """
-                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash
+                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, tags, pinned, expires_at, auth_mode, requires_action, share_token_hash
                 FROM artifacts
-                WHERE (lower(slug) LIKE ? OR lower(title) LIKE ? OR lower(description) LIKE ?)
+                WHERE (lower(slug) LIKE ? OR lower(title) LIKE ? OR lower(description) LIKE ? OR lower(tags) LIKE ?)
                 """
                 + archived_clause
                 + """
                 ORDER BY updated_at DESC, slug ASC
                 """,
-                (like, like, like),
+                (like, like, like, like),
             ).fetchall()
         return [self._row_to_artifact(row) for row in rows]
 
@@ -255,7 +261,7 @@ class ArtifactStore:
         with self._connect() as con:
             row = con.execute(
                 """
-                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash
+                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, tags, pinned, expires_at, auth_mode, requires_action, share_token_hash
                 FROM artifacts
                 WHERE slug = ?
                 """,
@@ -282,6 +288,7 @@ class ArtifactStore:
         title: Optional[str] = None,
         description: Optional[str] = None,
         pinned: Optional[bool] = None,
+        tags: Optional[Sequence[str]] = None,
         expires_at: Optional[int] = None,
         clear_expires_at: bool = False,
     ) -> Artifact:
@@ -292,6 +299,7 @@ class ArtifactStore:
             title=title if title is not None else artifact.title,
             description=description if description is not None else artifact.description,
             pinned=pinned if pinned is not None else artifact.pinned,
+            tags=_normalize_tags(tags) if tags is not None else artifact.tags,
             expires_at=next_expires_at,
             updated_at=int(time.time()),
         )
@@ -515,6 +523,7 @@ class ArtifactStore:
                     archived_at INTEGER,
                     archive_reason TEXT,
                     capabilities TEXT NOT NULL DEFAULT '[]',
+                    tags TEXT NOT NULL DEFAULT '[]',
                     pinned INTEGER NOT NULL DEFAULT 0,
                     expires_at INTEGER,
                     auth_mode TEXT NOT NULL DEFAULT 'public',
@@ -534,6 +543,8 @@ class ArtifactStore:
                 con.execute("ALTER TABLE artifacts ADD COLUMN archive_reason TEXT")
             if "capabilities" not in columns:
                 con.execute("ALTER TABLE artifacts ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'")
+            if "tags" not in columns:
+                con.execute("ALTER TABLE artifacts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
             if "pinned" not in columns:
                 con.execute("ALTER TABLE artifacts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
             if "expires_at" not in columns:
@@ -573,8 +584,8 @@ class ArtifactStore:
         with self._connect() as con:
             con.execute(
                 """
-                INSERT INTO artifacts (slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO artifacts (slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, tags, pinned, expires_at, auth_mode, requires_action, share_token_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slug) DO UPDATE SET
                     title = excluded.title,
                     description = excluded.description,
@@ -585,6 +596,7 @@ class ArtifactStore:
                     archived_at = excluded.archived_at,
                     archive_reason = excluded.archive_reason,
                     capabilities = excluded.capabilities,
+                    tags = excluded.tags,
                     pinned = excluded.pinned,
                     expires_at = excluded.expires_at,
                     auth_mode = excluded.auth_mode,
@@ -603,6 +615,7 @@ class ArtifactStore:
                     artifact.archived_at,
                     artifact.archive_reason,
                     json.dumps(list(artifact.capabilities)),
+                    json.dumps(list(artifact.tags)),
                     1 if artifact.pinned else 0,
                     artifact.expires_at,
                     artifact.auth_mode,
@@ -624,6 +637,7 @@ class ArtifactStore:
             archived_at=row["archived_at"],
             archive_reason=row["archive_reason"],
             capabilities=_decode_capabilities(row["capabilities"]),
+            tags=_decode_tags(row["tags"]),
             pinned=bool(row["pinned"]),
             expires_at=row["expires_at"],
             auth_mode=row["auth_mode"] or "public",
@@ -657,6 +671,7 @@ class ArtifactStore:
             "archived_at": artifact.archived_at,
             "archive_reason": artifact.archive_reason,
             "capabilities": artifact.capabilities,
+            "tags": artifact.tags,
             "pinned": artifact.pinned,
             "expires_at": artifact.expires_at,
             "auth_mode": artifact.auth_mode,
@@ -714,3 +729,20 @@ def _decode_capabilities(raw: str) -> tuple[str, ...]:
     if not isinstance(values, list):
         return ()
     return tuple(value for value in values if isinstance(value, str))
+
+
+def _normalize_tags(values: Optional[Sequence[str]]) -> tuple[str, ...]:
+    if not values:
+        return ()
+    seen: set[str] = set()
+    tags: list[str] = []
+    for value in values:
+        tag = sanitize_slug(str(value))
+        if tag not in seen:
+            seen.add(tag)
+            tags.append(tag)
+    return tuple(tags)
+
+
+def _decode_tags(raw: str) -> tuple[str, ...]:
+    return _normalize_tags(_decode_capabilities(raw))
