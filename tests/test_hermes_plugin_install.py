@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -113,9 +114,7 @@ def test_workspaces_install_plugin_writes_profile_plugin_and_enables_config(tmp_
 def test_installed_directory_plugin_registers_workspace_tools_without_core_changes(tmp_path: Path):
     runner = CliRunner()
     hermes_root = tmp_path / ".hermes"
-    runtime = tmp_path / "artifactd"
-    runtime.write_text("#!/bin/sh\n", encoding="utf-8")
-    runtime.chmod(0o755)
+    runtime = Path(shutil.which("artifactd") or sys.executable)
     result = runner.invoke(
         app,
         [
@@ -156,7 +155,16 @@ def test_installed_directory_plugin_registers_workspace_tools_without_core_chang
         sys.modules.pop(module_name, None)
 
     tool_names = {item["name"] for item in calls["tools"]}
-    assert {"workspaces_status", "workspaces_smoke", "workspaces_register_thing"}.issubset(tool_names)
+    assert {"workspaces_status", "workspaces_home", "workspaces_smoke", "workspaces_register_thing"}.issubset(tool_names)
+    home_tool = next(item for item in calls["tools"] if item["name"] == "workspaces_home")
+    source = hermes_root / "profile-home.html"
+    source.write_text("<h1>Home thing</h1>", encoding="utf-8")
+    ArtifactStore(hermes_root / "profiles" / "echo" / "workspaces").register_thing(source, slug="home-thing", title="Home Thing")
+    home_payload = json.loads(home_tool["handler"]({"profile": "echo", "hermes_root": str(hermes_root)}))
+    assert home_payload["success"] is True
+    assert home_payload["home"]["kind"] == "HermesWorkspaceHome"
+    assert home_payload["home"]["profile"] == "echo"
+    assert home_payload["home"]["buckets"]["active"][0]["slug"] == "home-thing"
     assert calls["commands"][0]["name"] == "workspaces"
     assert calls["cli"][0]["name"] == "workspaces"
 

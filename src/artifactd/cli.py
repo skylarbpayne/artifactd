@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -7,10 +8,11 @@ from typing import Optional, List
 
 import typer
 
-from .server import create_app
+from .server import create_app, _workspace_home_payload
 from .store import ArtifactStore
 from .workspaces import resolve_workspace_home
 from .hermes_plugin_installer import install_hermes_plugin
+from .actions import KanbanExecutor
 
 app = typer.Typer(help="Deploy and serve tiny static HTML artifacts.")
 workspaces_app = typer.Typer(help="Install, inspect, and smoke-test Hermes Workspaces for a profile.")
@@ -58,6 +60,22 @@ def workspaces_status(
     typer.echo(f"active_things={len(list(store.list(status='active')))}")
     typer.echo(f"pinned_things={len(store.list_workspace_things(bucket='pinned'))}")
     typer.echo(f"requires_action_things={len(store.list_workspace_things(bucket='requires-action'))}")
+
+
+@workspaces_app.command("home")
+def workspaces_home(
+    profile: str = typer.Option(..., "--profile", help="Hermes profile name."),
+    hermes_root: Optional[Path] = typer.Option(None, "--hermes-root", help="Root Hermes home containing profiles/<name>."),
+    profile_home: Optional[Path] = typer.Option(None, "--profile-home", help="Explicit profile-scoped HERMES_HOME."),
+):
+    workspace_home = resolve_workspace_home(profile, hermes_root=hermes_root, profile_home=profile_home)
+    payload = _workspace_home_payload(
+        ArtifactStore(workspace_home),
+        profile=profile,
+        executor=KanbanExecutor(profile=profile),
+        csrf_token="",
+    )
+    typer.echo(json.dumps(payload, sort_keys=True))
 
 
 @workspaces_app.command("start")

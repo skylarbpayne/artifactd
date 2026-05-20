@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from .store import ArtifactStore
+from .store import Artifact, ArtifactStore
 from .workspaces import resolve_workspace_home
 
 
@@ -41,6 +41,16 @@ def _tool_status(args: Optional[dict[str, Any]] = None, **kwargs) -> str:
                 "requires_action_things": len(store.list_workspace_things(bucket="requires-action")),
             }
         )
+    except Exception as exc:
+        return _json({"success": False, "error": str(exc)})
+
+
+def _tool_home(args: Optional[dict[str, Any]] = None, **kwargs) -> str:
+    try:
+        profile = _profile_from_args(args)
+        home = _workspace_home(args)
+        store = ArtifactStore(home)
+        return _json({"success": True, "home": _home_payload(store, profile=profile)})
     except Exception as exc:
         return _json({"success": False, "error": str(exc)})
 
@@ -90,6 +100,45 @@ def _tool_register_thing(args: Optional[dict[str, Any]] = None, **kwargs) -> str
         return _json({"success": True, "workspace_home": str(home), "slug": thing.slug, "auth_mode": thing.auth_mode})
     except Exception as exc:
         return _json({"success": False, "error": str(exc)})
+
+
+def _thing_payload(artifact: Artifact) -> dict[str, object]:
+    return {
+        "slug": artifact.slug,
+        "title": artifact.title,
+        "description": artifact.description,
+        "status": artifact.status,
+        "auth_mode": artifact.auth_mode,
+        "protected": artifact.has_password or artifact.uses_profile_auth,
+        "pinned": artifact.pinned,
+        "requires_action": artifact.requires_action,
+        "capabilities": list(artifact.capabilities),
+        "open_url": f"/{artifact.slug}",
+        "actions_url": f"/{artifact.slug}/_actions",
+        "updated_at": artifact.updated_at,
+    }
+
+
+def _home_payload(store: ArtifactStore, *, profile: str) -> dict[str, object]:
+    return {
+        "kind": "HermesWorkspaceHome",
+        "profile": profile,
+        "language": {"home": "Home", "thing": "Thing", "things": "Things"},
+        "counts": {
+            "active": len(store.list_workspace_things(bucket="active")),
+            "pinned": len(store.list_workspace_things(bucket="pinned")),
+            "recent": len(store.list_workspace_things(bucket="recent")),
+            "requires-action": len(store.list_workspace_things(bucket="requires-action")),
+            "archived": len(store.list_workspace_things(bucket="archived")),
+        },
+        "buckets": {
+            "active": [_thing_payload(item) for item in store.list_workspace_things(bucket="active")],
+            "pinned": [_thing_payload(item) for item in store.list_workspace_things(bucket="pinned")],
+            "recent": [_thing_payload(item) for item in store.list_workspace_things(bucket="recent")],
+            "requires_action": [_thing_payload(item) for item in store.list_workspace_things(bucket="requires-action")],
+            "archived": [_thing_payload(item) for item in store.list_workspace_things(bucket="archived")],
+        },
+    }
 
 
 def _slash_workspaces(raw_args: str = "") -> str:
@@ -157,6 +206,18 @@ _STATUS_SCHEMA = {
         },
     },
 }
+_HOME_SCHEMA = {
+    "name": "workspaces_home",
+    "description": "Return Hermes Home/Things dashboard JSON for a profile.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "profile": {"type": "string"},
+            "hermes_root": {"type": "string"},
+            "profile_home": {"type": "string"},
+        },
+    },
+}
 _SMOKE_SCHEMA = {
     "name": "workspaces_smoke",
     "description": "Create a protected smoke Thing in a profile workspace.",
@@ -194,6 +255,7 @@ _REGISTER_SCHEMA = {
 
 def register(ctx) -> None:
     ctx.register_tool(name="workspaces_status", toolset="workspaces", schema=_STATUS_SCHEMA, handler=_tool_status, emoji="🏠")
+    ctx.register_tool(name="workspaces_home", toolset="workspaces", schema=_HOME_SCHEMA, handler=_tool_home, emoji="🧭")
     ctx.register_tool(name="workspaces_smoke", toolset="workspaces", schema=_SMOKE_SCHEMA, handler=_tool_smoke, emoji="💨")
     ctx.register_tool(name="workspaces_register_thing", toolset="workspaces", schema=_REGISTER_SCHEMA, handler=_tool_register_thing, emoji="🧩")
     ctx.register_command(name="workspaces", handler=_slash_workspaces, description="Show Hermes Workspaces status", args_hint="status")

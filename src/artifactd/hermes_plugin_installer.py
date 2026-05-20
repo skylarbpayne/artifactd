@@ -129,6 +129,7 @@ author: Skylar Payne / Palmer
 kind: standalone
 provides_tools:
   - workspaces_status
+  - workspaces_home
   - workspaces_smoke
   - workspaces_register_thing
 """
@@ -199,6 +200,17 @@ def _json(result: dict) -> str:
 
 def _tool_status(args=None, **kwargs) -> str:
     return _json(_run_artifactd(_base_workspace_args("status")))
+
+
+def _tool_home(args=None, **kwargs) -> str:
+    result = _run_artifactd(_base_workspace_args("home"))
+    if result["success"]:
+        try:
+            result["home"] = json.loads(result.get("stdout") or "{}")
+        except Exception as exc:
+            result["success"] = False
+            result["error"] = f"home JSON parse failed: {exc}"
+    return _json(result)
 
 
 def _tool_smoke(args=None, **kwargs) -> str:
@@ -288,6 +300,11 @@ _STATUS_SCHEMA = {
     "description": "Show Hermes Workspaces status for the owning profile.",
     "parameters": {"type": "object", "properties": {}},
 }
+_HOME_SCHEMA = {
+    "name": "workspaces_home",
+    "description": "Return Hermes Home/Things dashboard JSON for the owning profile.",
+    "parameters": {"type": "object", "properties": {}},
+}
 _SMOKE_SCHEMA = {
     "name": "workspaces_smoke",
     "description": "Create a protected smoke Thing in the owning profile workspace.",
@@ -317,6 +334,7 @@ _REGISTER_SCHEMA = {
 
 def register(ctx) -> None:
     ctx.register_tool(name="workspaces_status", toolset="workspaces", schema=_STATUS_SCHEMA, handler=_tool_status, emoji="🏠")
+    ctx.register_tool(name="workspaces_home", toolset="workspaces", schema=_HOME_SCHEMA, handler=_tool_home, emoji="🧭")
     ctx.register_tool(name="workspaces_smoke", toolset="workspaces", schema=_SMOKE_SCHEMA, handler=_tool_smoke, emoji="💨")
     ctx.register_tool(name="workspaces_register_thing", toolset="workspaces", schema=_REGISTER_SCHEMA, handler=_tool_register_thing, emoji="🧩")
     ctx.register_command(name="workspaces", handler=_slash_workspaces, description="Show Hermes Workspaces status", args_hint="status")

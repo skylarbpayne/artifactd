@@ -24,12 +24,18 @@ class Capability:
     description: str
     schema: dict[str, Any]
     handler: Callable[[ArtifactStore, Artifact, dict[str, Any], "KanbanExecutor"], dict[str, Any]]
+    provider: str = "artifactd"
+    executes_via: str = "artifactd sidecar"
     approval_required: bool = False
 
 
 class KanbanExecutor:
     def __init__(self, profile: Optional[str] = None):
         self.profile = profile or _default_profile()
+
+    @property
+    def actor(self) -> str:
+        return f"hermes-profile:{self.profile}"
 
     def comment(self, task_id: str, body: str) -> dict[str, Any]:
         completed = subprocess.run(
@@ -70,7 +76,7 @@ def register_action_routes(app: FastAPI, store: ArtifactStore, secret: str, *, k
     @app.get("/{slug}/_actions")
     async def action_manifest(slug: str, request: Request):
         artifact, session_cookie = _require_action_session(store, secret, slug, request)
-        allowed = [_capability_payload(capability) for capability in _artifact_capabilities(artifact)]
+        allowed = [_capability_payload(capability, executor) for capability in _artifact_capabilities(artifact)]
         return {"slug": artifact.slug, "csrf_token": sign_csrf_token(artifact.slug, session_cookie, secret), "capabilities": allowed}
 
     @app.post("/{slug}/_actions/{capability_name}")
@@ -88,7 +94,7 @@ def register_action_routes(app: FastAPI, store: ArtifactStore, secret: str, *, k
             store.record_action_audit(
                 slug=artifact.slug,
                 capability=capability.name,
-                actor="artifact-session",
+                actor=_audit_actor(capability, executor),
                 payload_hash=payload_hash,
                 status="denied",
                 error="csrf verification failed",
@@ -98,7 +104,7 @@ def register_action_routes(app: FastAPI, store: ArtifactStore, secret: str, *, k
             store.record_action_audit(
                 slug=artifact.slug,
                 capability=capability.name,
-                actor="artifact-session",
+                actor=_audit_actor(capability, executor),
                 payload_hash=payload_hash,
                 status="approval_required",
                 error="external or destructive actions require approval",
@@ -111,7 +117,7 @@ def register_action_routes(app: FastAPI, store: ArtifactStore, secret: str, *, k
             store.record_action_audit(
                 slug=artifact.slug,
                 capability=capability.name,
-                actor="artifact-session",
+                actor=_audit_actor(capability, executor),
                 payload_hash=payload_hash,
                 status="error",
                 error=str(exc.detail),
@@ -122,7 +128,7 @@ def register_action_routes(app: FastAPI, store: ArtifactStore, secret: str, *, k
             store.record_action_audit(
                 slug=artifact.slug,
                 capability=capability.name,
-                actor="artifact-session",
+                actor=_audit_actor(capability, executor),
                 payload_hash=payload_hash,
                 status="error",
                 error=error[:500],
@@ -132,7 +138,7 @@ def register_action_routes(app: FastAPI, store: ArtifactStore, secret: str, *, k
             store.record_action_audit(
                 slug=artifact.slug,
                 capability=capability.name,
-                actor="artifact-session",
+                actor=_audit_actor(capability, executor),
                 payload_hash=payload_hash,
                 status="error",
                 error=exc.__class__.__name__,
@@ -141,7 +147,7 @@ def register_action_routes(app: FastAPI, store: ArtifactStore, secret: str, *, k
         store.record_action_audit(
             slug=artifact.slug,
             capability=capability.name,
-            actor="artifact-session",
+            actor=_audit_actor(capability, executor),
             payload_hash=payload_hash,
             status="ok",
             result_summary=_result_summary(result),
@@ -193,13 +199,24 @@ def _artifact_capabilities(artifact: Artifact) -> list[Capability]:
     return [CAPABILITY_REGISTRY[name] for name in artifact.capabilities if name in CAPABILITY_REGISTRY]
 
 
-def _capability_payload(capability: Capability) -> dict[str, Any]:
-    return {
+def _capability_payload(capability: Capability, executor: KanbanExecutor) -> dict[str, Any]:
+    payload = {
         "name": capability.name,
         "description": capability.description,
         "schema": capability.schema,
+        "provider": capability.provider,
+        "executes_via": capability.executes_via,
         "approval_required": capability.approval_required,
     }
+    if capability.provider == "hermes-profile":
+        payload["profile"] = getattr(executor, "profile", _default_profile())
+    return payload
+
+
+def _audit_actor(capability: Capability, executor: KanbanExecutor) -> str:
+    if capability.provider == "hermes-profile":
+        return str(getattr(executor, "actor", f"hermes-profile:{getattr(executor, 'profile', _default_profile())}"))
+    return "artifact-session"
 
 
 def _payload_too_large(request: Request) -> bool:
@@ -348,12 +365,16 @@ CAPABILITY_REGISTRY: dict[str, Capability] = {
         description="Append a comment to an existing Hermes Kanban task.",
         schema={"type": "object", "required": ["task_id", "body"]},
         handler=_kanban_comment,
+        provider="hermes-profile",
+        executes_via="Hermes profile tool/plugin bridge",
     ),
     "kanban.create_task": Capability(
         name="kanban.create_task",
         description="Create a new Hermes Kanban task with an explicit assignee.",
         schema={"type": "object", "required": ["title", "assignee"]},
         handler=_kanban_create_task,
+        provider="hermes-profile",
+        executes_via="Hermes profile tool/plugin bridge",
     ),
     "draft.email": Capability(
         name="draft.email",

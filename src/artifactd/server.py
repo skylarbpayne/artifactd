@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
-from .actions import KanbanExecutor, register_action_routes
+from .actions import CAPABILITY_REGISTRY, KanbanExecutor, register_action_routes
 from .interactive import register_interactive_routes
 from .security import sign_artifact_cookie, sign_csrf_token, verify_artifact_cookie, verify_csrf_token, verify_password
 from .store import Artifact, ArtifactStore
@@ -17,9 +17,17 @@ DEFAULT_HOME = Path(os.environ.get("ARTIFACTD_HOME", "~/.hermes/artifacts")).exp
 DEFAULT_COOKIE_SECRET = os.environ.get("ARTIFACTD_COOKIE_SECRET", "dev-only-change-me")
 
 
-def create_app(home: Path = DEFAULT_HOME, *, cookie_secret: Optional[str] = None, kanban_executor: Optional[KanbanExecutor] = None) -> FastAPI:
+def create_app(
+    home: Path = DEFAULT_HOME,
+    *,
+    cookie_secret: Optional[str] = None,
+    kanban_executor: Optional[KanbanExecutor] = None,
+    profile: Optional[str] = None,
+) -> FastAPI:
     store = ArtifactStore(Path(home))
     secret = cookie_secret or DEFAULT_COOKIE_SECRET
+    executor = kanban_executor or KanbanExecutor(profile=profile)
+    workspace_profile = profile or getattr(executor, "profile", "default")
     app = FastAPI(title="artifactd")
 
     @app.get("/", response_class=HTMLResponse)
@@ -37,6 +45,7 @@ def create_app(home: Path = DEFAULT_HOME, *, cookie_secret: Optional[str] = None
                 bucket=bucket,
                 counts=_workspace_counts(store),
                 csrf_token=csrf_token,
+                profile=workspace_profile,
             )
         )
 
@@ -54,6 +63,7 @@ def create_app(home: Path = DEFAULT_HOME, *, cookie_secret: Optional[str] = None
                 bucket="archived",
                 counts=_workspace_counts(store),
                 csrf_token=_workspace_csrf_token(session_cookie, secret),
+                profile=workspace_profile,
             )
         )
 
@@ -87,6 +97,14 @@ def create_app(home: Path = DEFAULT_HOME, *, cookie_secret: Optional[str] = None
             },
             "counts": _workspace_counts(store),
         }
+
+    @app.get("/_workspace/home")
+    def workspace_home(request: Request) -> dict[str, object]:
+        session_cookie = _workspace_session_cookie(request, secret)
+        if store.workspace_password_configured() and not session_cookie:
+            raise HTTPException(status_code=401, detail="workspace password required")
+        csrf_token = _workspace_csrf_token(session_cookie, secret)
+        return _workspace_home_payload(store, profile=workspace_profile, executor=executor, csrf_token=csrf_token)
 
     @app.post("/_workspace/things/{slug}/pin")
     async def workspace_pin(slug: str, request: Request, pinned: str = Form("true"), csrf_token: str = Form("")) -> Response:
@@ -178,7 +196,7 @@ def create_app(home: Path = DEFAULT_HOME, *, cookie_secret: Optional[str] = None
         )
         return response
 
-    register_action_routes(app, store, secret, kanban_executor=kanban_executor)
+    register_action_routes(app, store, secret, kanban_executor=executor)
     register_interactive_routes(app, store, secret)
 
     @app.get("/{slug}")
@@ -201,10 +219,12 @@ def _index_page(
     bucket: str = "active",
     counts: Optional[dict[str, int]] = None,
     csrf_token: str = "",
+    profile: str = "default",
 ) -> str:
     escaped_query = html.escape(query.strip(), quote=True)
     escaped_heading = html.escape(heading)
     escaped_bucket = html.escape(bucket, quote=True)
+    escaped_profile = html.escape(profile)
     counts = counts or {}
     cards = []
     for artifact in artifacts:
@@ -285,7 +305,8 @@ def _index_page(
           header {{ display: grid; gap: 18px; margin-bottom: 32px; }}
           nav a {{ display: inline-flex; width: fit-content; border: 1px solid var(--line); border-radius: 999px; padding: 10px 14px; color: var(--text); text-decoration: none; }}
           h1 {{ margin: 0; font-size: clamp(2.4rem, 7vw, 5rem); letter-spacing: -.06em; }}
-          .lede {{ margin: 0; max-width: 42rem; color: var(--muted); font-size: 1.08rem; line-height: 1.6; }}
+          .lede, .bridge {{ margin: 0; max-width: 42rem; color: var(--muted); font-size: 1.08rem; line-height: 1.6; }}
+          .bridge {{ color: #c4b5fd; font-size: .92rem; }}
           form.search {{ display: flex; gap: 10px; max-width: 44rem; }}
           input {{ flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 999px; padding: 14px 18px; background: rgba(255,255,255,.08); color: var(--text); font: inherit; }}
           button {{ border: 0; border-radius: 999px; padding: 14px 18px; background: var(--accent); color: white; font: inherit; font-weight: 700; cursor: pointer; }}
@@ -315,6 +336,7 @@ def _index_page(
           <header>
             <p class="eyebrow">artifactd</p>
             <h1>{escaped_heading}</h1>
+            <p class="bridge">Hermes profile bridge · profile={escaped_profile} · server-side actions route through scoped capabilities and audit.</p>
             <p class="lede">{html.escape(lede)}</p>
             <nav><a href="{nav_href}">{nav_label}</a></nav>
             {bucket_links}
@@ -387,6 +409,75 @@ def _thing_payload(artifact: Artifact) -> dict[str, object]:
         "updated_at": artifact.updated_at,
         "path": f"/{artifact.slug}",
     }
+
+
+def _workspace_home_payload(store: ArtifactStore, *, profile: str, executor: KanbanExecutor, csrf_token: str) -> dict[str, object]:
+    bucket_names = ["active", "pinned", "recent", "requires-action", "archived"]
+    return {
+        "kind": "HermesWorkspaceHome",
+        "title": "Hermes Home",
+        "profile": profile,
+        "language": {"home": "Home", "thing": "Thing", "things": "Things"},
+        "counts": _workspace_counts(store),
+        "buckets": {
+            _payload_bucket_key(bucket): [
+                _workspace_home_thing_payload(artifact, profile=profile, executor=executor, csrf_token=csrf_token)
+                for artifact in store.list_workspace_things(bucket=bucket)
+            ]
+            for bucket in bucket_names
+        },
+    }
+
+
+def _payload_bucket_key(bucket: str) -> str:
+    return "requires_action" if bucket == "requires-action" else bucket
+
+
+def _workspace_home_thing_payload(artifact: Artifact, *, profile: str, executor: KanbanExecutor, csrf_token: str) -> dict[str, object]:
+    payload = _thing_payload(artifact)
+    payload.update(
+        {
+            "open_url": f"/{artifact.slug}",
+            "actions_url": f"/{artifact.slug}/_actions",
+            "workspace_actions": _workspace_action_payloads(artifact, csrf_token),
+            "capability_bridge": {
+                "provider": "hermes-profile",
+                "profile": profile,
+                "audit_actor": str(getattr(executor, "actor", f"hermes-profile:{profile}")),
+            },
+            "capabilities": _capabilities_payload(artifact, profile=profile),
+        }
+    )
+    return payload
+
+
+def _workspace_action_payloads(artifact: Artifact, csrf_token: str) -> dict[str, dict[str, object]]:
+    return {
+        "share": {"method": "POST", "url": f"/_workspace/things/{artifact.slug}/share", "requires_csrf": True, "csrf_token": csrf_token, "approval_required": False},
+        "pin": {"method": "POST", "url": f"/_workspace/things/{artifact.slug}/pin", "requires_csrf": True, "csrf_token": csrf_token, "approval_required": False},
+        "requires_action": {"method": "POST", "url": f"/_workspace/things/{artifact.slug}/requires-action", "requires_csrf": True, "csrf_token": csrf_token, "approval_required": False},
+        "archive": {"method": "POST", "url": f"/_workspace/things/{artifact.slug}/archive", "requires_csrf": True, "csrf_token": csrf_token, "approval_required": False},
+    }
+
+
+def _capabilities_payload(artifact: Artifact, *, profile: str) -> dict[str, dict[str, object]]:
+    capabilities: dict[str, dict[str, object]] = {}
+    for name in artifact.capabilities:
+        capability = CAPABILITY_REGISTRY.get(name)
+        if not capability:
+            continue
+        item: dict[str, object] = {
+            "name": capability.name,
+            "description": capability.description,
+            "schema": capability.schema,
+            "provider": capability.provider,
+            "executes_via": capability.executes_via,
+            "approval_required": capability.approval_required,
+        }
+        if capability.provider == "hermes-profile":
+            item["profile"] = profile
+        capabilities[name] = item
+    return capabilities
 
 
 def _workspace_session_cookie(request: Request, secret: str) -> Optional[str]:

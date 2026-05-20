@@ -90,6 +90,7 @@ python -m pip install -e '.[dev]'
 TMPDIR=$(mktemp -d)
 artifactd workspaces smoke --profile echo --hermes-root "$TMPDIR/.hermes" --password "dev-only"
 artifactd workspaces status --profile echo --hermes-root "$TMPDIR/.hermes"
+artifactd workspaces home --profile echo --hermes-root "$TMPDIR/.hermes"
 artifactd workspaces start --profile echo --hermes-root "$TMPDIR/.hermes" --port 8788
 
 # Install the profile-local Hermes plugin wrapper from this package
@@ -115,6 +116,7 @@ Useful commands:
 ```bash
 artifactd workspaces install --profile palmer --password "<store outside git>"
 artifactd workspaces status --profile palmer
+artifactd workspaces home --profile palmer
 artifactd workspaces register ./dist/daily.html --profile palmer --slug daily --title "Daily"
 artifactd workspaces install-plugin \
   --profile palmer \
@@ -138,6 +140,7 @@ Current Workspaces behavior:
 - single-Thing share override tokens are available for explicit sharing;
 - legacy custom-password artifacts remain compatible;
 - Home exposes Open, Share, Update, Pin, Requires action, and Archive controls;
+- `GET /_workspace/home` returns first-class Home/Things dashboard JSON with profile bridge/capability metadata;
 - `GET /_workspace/things` returns dashboard-friendly buckets/counts.
 
 This is the correct plugin-first path: `artifactd` is the separately installable sidecar/plugin package, generated Things are not Hermes plugins, and Hermes core is not modified for Workspaces.

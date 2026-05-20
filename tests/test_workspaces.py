@@ -243,6 +243,90 @@ def test_workspace_registry_endpoint_lists_home_buckets_after_profile_login(tmp_
     assert "Needs Review" in pinned_page.text
 
 
+def test_workspace_home_dashboard_endpoint_exposes_things_actions_and_bridge_metadata(tmp_path: Path):
+    source = tmp_path / "day.html"
+    source.write_text("<h1>Day</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "workspaces")
+    store.set_workspace_password("profile-secret")
+    store.register_thing(
+        source,
+        slug="day-plan",
+        title="Day Plan",
+        description="Today cockpit",
+        capabilities=["artifact.describe", "kanban.comment"],
+        requires_action=True,
+        pinned=True,
+    )
+    client = TestClient(create_app(tmp_path / "workspaces", cookie_secret="test-secret", profile="echo"))
+
+    locked = client.get("/_workspace/home")
+    client.post("/_workspace/login", data={"password": "profile-secret"}, follow_redirects=False)
+    response = client.get("/_workspace/home")
+    home_page = client.get("/")
+
+    assert locked.status_code == 401
+    assert response.status_code == 200
+    assert home_page.status_code == 200
+    assert "Hermes profile bridge" in home_page.text
+    assert "profile=echo" in home_page.text
+    payload = response.json()
+    assert payload["kind"] == "HermesWorkspaceHome"
+    assert payload["profile"] == "echo"
+    assert payload["language"] == {"home": "Home", "thing": "Thing", "things": "Things"}
+    assert payload["counts"]["requires-action"] == 1
+    thing = payload["buckets"]["pinned"][0]
+    assert thing["slug"] == "day-plan"
+    assert thing["open_url"] == "/day-plan"
+    assert thing["actions_url"] == "/day-plan/_actions"
+    assert thing["workspace_actions"]["pin"]["method"] == "POST"
+    assert thing["workspace_actions"]["archive"]["approval_required"] is False
+    assert thing["capability_bridge"] == {
+        "provider": "hermes-profile",
+        "profile": "echo",
+        "audit_actor": "hermes-profile:echo",
+    }
+    assert thing["capabilities"]["kanban.comment"]["provider"] == "hermes-profile"
+    assert thing["capabilities"]["kanban.comment"]["approval_required"] is False
+
+
+def test_action_manifest_and_audit_use_hermes_profile_bridge_actor(tmp_path: Path):
+    class FakeHermesBridge:
+        profile = "echo"
+        actor = "hermes-profile:echo"
+
+        def comment(self, task_id: str, body: str):
+            return {"task_id": task_id, "body": body, "profile": self.profile}
+
+        def create_task(self, **kwargs):  # pragma: no cover - not used here
+            return {"profile": self.profile, **kwargs}
+
+    source = tmp_path / "thing.html"
+    source.write_text("<h1>Thing</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "workspaces")
+    store.set_workspace_password("profile-secret")
+    store.register_thing(source, slug="thing", title="Thing", capabilities=["kanban.comment"])
+    client = TestClient(create_app(tmp_path / "workspaces", cookie_secret="test-secret", kanban_executor=FakeHermesBridge(), profile="echo"))
+
+    client.post("/_workspace/login", data={"password": "profile-secret"}, follow_redirects=False)
+    manifest = client.get("/thing/_actions")
+    csrf = manifest.json()["csrf_token"]
+    action = client.post(
+        "/thing/_actions/kanban.comment",
+        json={"task_id": "t_abc123", "body": "from thing", "_csrf": csrf},
+    )
+
+    assert manifest.status_code == 200
+    capability = manifest.json()["capabilities"][0]
+    assert capability["provider"] == "hermes-profile"
+    assert capability["profile"] == "echo"
+    assert capability["executes_via"] == "Hermes profile tool/plugin bridge"
+    assert action.status_code == 200
+    assert action.json()["result"]["profile"] == "echo"
+    audits = store.list_action_audit("thing")
+    assert audits[-1].actor == "hermes-profile:echo"
+    assert audits[-1].capability == "kanban.comment"
+
+
 def test_workspace_home_forms_pin_share_requires_action_and_archive_with_csrf(tmp_path: Path):
     source = tmp_path / "thing.html"
     source.write_text("<h1>Thing</h1>", encoding="utf-8")
