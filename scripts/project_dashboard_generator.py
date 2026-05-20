@@ -609,8 +609,8 @@ def deploy_outputs(out_dir: Path, password: str | None, public_base_url: str, ar
         "--capability",
         "kanban.create_task",
     ]
-    if password:
-        cmd.extend(["--password", password])
+    # Per-artifact passwords are intentionally disabled. `password` is accepted
+    # only for backward-compatible callers and is not passed to artifactd.
     try:
         result = subprocess.run(cmd, check=True, text=True, capture_output=True)
     except subprocess.CalledProcessError as exc:
@@ -637,7 +637,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--artifact-db", type=Path, default=DEFAULT_ARTIFACT_DB)
     parser.add_argument("--out", type=Path, default=Path("dist"))
     parser.add_argument("--deploy", action="store_true", help="Deploy the generated directory using artifactd CLI.")
-    parser.add_argument("--password", default=None, help="Optional per-artifact password for deployment.")
+    parser.add_argument("--password", default=None, help="Deprecated/no-op: artifacts use workspace/profile auth, not individual passwords.")
     parser.add_argument("--public-base-url", default=DEFAULT_PUBLIC_BASE_URL)
     parser.add_argument("--deploy-slug", default=DEFAULT_DEPLOY_SLUG)
     parser.add_argument("--artifactd", default="/Users/skylarpayne/artifactd/.venv/bin/artifactd")

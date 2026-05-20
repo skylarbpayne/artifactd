@@ -127,9 +127,10 @@ class ArtifactStore:
         now = int(time.time())
         existing = self.get(safe_slug)
         created_at = existing.created_at if existing else now
-        password_supplied = password is not None
-        password_hash_value = hash_password(password) if password_supplied else (existing.password_hash if existing else None)
-        next_auth_mode = _normalize_auth_mode(auth_mode, password_hash_value, existing.auth_mode if existing else None, password_supplied=password_supplied)
+        if password is not None:
+            raise ValueError("per-artifact passwords are disabled; use workspace/profile auth or a share link")
+        password_hash_value = None
+        next_auth_mode = _normalize_auth_mode(auth_mode, existing.auth_mode if existing else None)
         artifact = Artifact(
             slug=safe_slug,
             title=title or (existing.title if existing else safe_slug),
@@ -169,13 +170,15 @@ class ArtifactStore:
     ) -> Artifact:
         """Register an agent-generated Workspace Thing using profile auth by default."""
 
-        auth_mode = "public" if public else ("custom" if password else "profile")
+        if password is not None:
+            raise ValueError("per-artifact passwords are disabled; use workspace/profile auth or a share link")
+        auth_mode = "public" if public else "profile"
         return self.deploy(
             source,
             slug=slug,
             title=title,
             description=description,
-            password=password,
+            password=None,
             capabilities=capabilities,
             tags=tags,
             pinned=pinned,
@@ -208,7 +211,7 @@ class ArtifactStore:
                     path=destination,
                     created_at=artifact.created_at,
                     updated_at=artifact.updated_at,
-                    password_hash=artifact.password_hash,
+                    password_hash=None,
                     status=artifact.status,
                     archived_at=artifact.archived_at,
                     archive_reason=artifact.archive_reason,
@@ -216,7 +219,7 @@ class ArtifactStore:
                     tags=artifact.tags,
                     pinned=artifact.pinned,
                     expires_at=artifact.expires_at,
-                    auth_mode=artifact.auth_mode,
+                    auth_mode="profile" if artifact.password_hash else artifact.auth_mode,
                     requires_action=artifact.requires_action,
                     share_token_hash=artifact.share_token_hash,
                     share_token_expires_at=artifact.share_token_expires_at,
@@ -273,10 +276,7 @@ class ArtifactStore:
         return self._row_to_artifact(row) if row else None
 
     def protect(self, slug: str, password: str) -> Artifact:
-        artifact = self._require(slug)
-        updated = self._copy_artifact(artifact, updated_at=int(time.time()), password_hash=hash_password(password), auth_mode="custom")
-        self._upsert(updated)
-        return updated
+        raise ValueError("per-artifact passwords are disabled; use workspace/profile auth or a share link")
 
     def unprotect(self, slug: str) -> Artifact:
         artifact = self._require(slug)
@@ -430,7 +430,7 @@ class ArtifactStore:
                 report.append({"slug": artifact.slug, "action": "skip", "reason": "pinned"})
                 continue
             if artifact.status == "archived":
-                if artifact.has_password:
+                if artifact.has_password or artifact.uses_profile_auth:
                     report.append({"slug": artifact.slug, "action": "skip", "reason": "protected"})
                     continue
                 report.append({"slug": artifact.slug, "action": "delete", "reason": "expired archived"})
@@ -713,20 +713,13 @@ class ArtifactStore:
 
 def _normalize_auth_mode(
     auth_mode: Optional[str],
-    password_hash_value: Optional[str],
     existing_auth_mode: Optional[str],
-    *,
-    password_supplied: bool = False,
 ) -> str:
     if auth_mode is None:
-        if password_supplied:
-            return "custom"
-        return existing_auth_mode or ("custom" if password_hash_value else "public")
+        return "profile" if existing_auth_mode == "profile" else "public"
     auth_mode = auth_mode.lower()
-    if auth_mode not in {"public", "profile", "custom"}:
+    if auth_mode not in {"public", "profile"}:
         raise ValueError(f"invalid auth mode: {auth_mode}")
-    if auth_mode == "custom" and not password_hash_value:
-        raise ValueError("custom auth mode requires a password")
     return auth_mode
 
 

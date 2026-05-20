@@ -161,14 +161,10 @@ def _require_action_session(store: ArtifactStore, secret: str, slug: str, reques
         raise HTTPException(status_code=404, detail="artifact not found")
     if artifact.is_archived:
         raise HTTPException(status_code=410, detail="artifact is archived")
-    if artifact.uses_profile_auth:
+    if artifact.uses_profile_auth or artifact.password_hash:
         session_cookie = request.cookies.get(_workspace_cookie_name())
         if not verify_artifact_cookie("__workspace__", session_cookie, secret):
             raise HTTPException(status_code=401, detail="workspace password required")
-    elif artifact.password_hash:
-        session_cookie = request.cookies.get(_cookie_name(artifact.slug))
-        if not verify_artifact_cookie(artifact.slug, session_cookie, secret):
-            raise HTTPException(status_code=401, detail="password required")
     else:
         raise HTTPException(status_code=403, detail="action capabilities require a protected artifact or workspace session")
     return artifact, session_cookie or ""

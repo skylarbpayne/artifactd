@@ -293,10 +293,10 @@ def _require_interactive_access(
     artifact = store.get(slug)
     if not artifact:
         raise HTTPException(status_code=404, detail="artifact not found")
-    if artifact.password_hash:
-        cookie = request.cookies.get(_cookie_name(artifact.slug))
-        if not verify_artifact_cookie(artifact.slug, cookie, secret):
-            raise HTTPException(status_code=401, detail="password required")
+    if artifact.uses_profile_auth or artifact.password_hash:
+        cookie = request.cookies.get("artifactd_workspace_auth")
+        if not verify_artifact_cookie("__workspace__", cookie, secret):
+            raise HTTPException(status_code=401, detail="workspace password required")
     return artifact
 
 

@@ -531,7 +531,7 @@ def render_html(checks: list[Check], generated_at: str) -> str:
         <pre>cd /Users/skylarpayne/artifactd
 . .venv/bin/activate
 python scripts/agent_health_dashboard.py --out dist/agent-health
-artifactd --home /Users/skylarpayne/.hermes/artifacts --public-base-url https://artifacts.skylarbpayne.com deploy dist/agent-health --slug agent-health --title "Palmer / Echo connectivity health" --description "Protected dashboard with live smoke-test status for Palmer and Echo app connectivity, especially Google/email auth." --password "$(cat /Users/skylarpayne/.hermes/artifacts/.agent-health-password)" --pinned</pre>
+artifactd --home /Users/skylarpayne/.hermes/artifacts --public-base-url https://artifacts.skylarbpayne.com deploy dist/agent-health --slug agent-health --title "Palmer / Echo connectivity health" --description "Protected dashboard with live smoke-test status for Palmer and Echo app connectivity, especially Google/email auth." --pinned</pre>
       </article>
     </section>
 

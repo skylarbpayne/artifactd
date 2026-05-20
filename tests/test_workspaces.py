@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from artifactd.actions import KanbanExecutor
+from artifactd.security import hash_password
 from artifactd.cli import app
 from artifactd.server import create_app
 from artifactd.store import ArtifactStore
@@ -103,24 +104,24 @@ def test_workspace_share_override_token_unlocks_one_profile_protected_thing_for_
     assert not store.verify_share_token("thing", "wrong", now=1_001)
 
 
-def test_redeploying_existing_public_artifact_with_password_switches_to_custom_auth(tmp_path: Path):
+def test_redeploying_existing_public_artifact_with_password_is_rejected(tmp_path: Path):
     source = tmp_path / "thing.html"
     source.write_text("<h1>Thing</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "workspaces")
 
     public = store.deploy(source, slug="thing")
-    protected = store.deploy(source, slug="thing", password="per-thing-secret")
 
+    with pytest.raises(ValueError, match="per-artifact passwords are disabled"):
+        store.deploy(source, slug="thing", password="per-thing-secret")
     assert public.auth_mode == "public"
-    assert protected.auth_mode == "custom"
-    assert protected.has_password
+    assert not store.get("thing").has_password
 
 
 def test_workspace_home_and_profile_session_unlock_generated_things(tmp_path: Path):
     source = tmp_path / "thing.html"
     source.write_text("<h1>Protected thing</h1>", encoding="utf-8")
-    custom_source = tmp_path / "custom.html"
-    custom_source.write_text("<h1>Legacy custom protected thing</h1>", encoding="utf-8")
+    profile_source = tmp_path / "profile.html"
+    profile_source.write_text("<h1>Second profile protected thing</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "workspaces")
     store.set_workspace_password("profile-secret")
     store.register_thing(
@@ -131,21 +132,21 @@ def test_workspace_home_and_profile_session_unlock_generated_things(tmp_path: Pa
         capabilities=["artifact.describe"],
         requires_action=True,
     )
-    store.deploy(custom_source, slug="custom-thing", title="Custom Thing", password="custom-secret")
+    store.deploy(profile_source, slug="profile-thing", title="Profile Thing", auth_mode="profile")
     client = TestClient(create_app(tmp_path / "workspaces", cookie_secret="test-secret"))
 
     locked_home = client.get("/")
     locked_thing = client.get("/protected-thing")
-    locked_custom = client.get("/custom-thing")
-    login_page = client.get("/custom-thing")
-    accepted = client.post("/custom-thing/login", data={"password": "profile-secret"}, follow_redirects=False)
+    locked_profile = client.get("/profile-thing")
+    login_page = client.get("/profile-thing")
+    accepted = client.post("/profile-thing/login", data={"password": "profile-secret"}, follow_redirects=False)
     unlocked_home = client.get("/")
     unlocked_thing = client.get("/protected-thing")
-    unlocked_custom = client.get("/custom-thing")
+    unlocked_profile = client.get("/profile-thing")
 
     assert locked_home.status_code == 401
     assert locked_thing.status_code == 401
-    assert locked_custom.status_code == 401
+    assert locked_profile.status_code == 401
     assert "artifactd.masterPassword" in login_page.text
     assert "localStorage" in login_page.text
     assert accepted.status_code == 303
@@ -155,8 +156,8 @@ def test_workspace_home_and_profile_session_unlock_generated_things(tmp_path: Pa
     assert "Hermes Home" not in unlocked_home.text
     assert unlocked_thing.status_code == 200
     assert "Protected thing" in unlocked_thing.text
-    assert unlocked_custom.status_code == 200
-    assert "Legacy custom protected thing" in unlocked_custom.text
+    assert unlocked_profile.status_code == 200
+    assert "Second profile protected thing" in unlocked_profile.text
 
 
 def test_workspace_share_token_serves_without_profile_session(tmp_path: Path):
@@ -176,23 +177,26 @@ def test_workspace_share_token_serves_without_profile_session(tmp_path: Path):
     assert "Shared thing" in shared.text
 
 
-def test_migrated_password_hash_still_requires_artifact_password(tmp_path: Path):
+def test_migrated_password_hash_requires_workspace_password_not_artifact_password(tmp_path: Path):
     source = tmp_path / "legacy.html"
     source.write_text("<h1>Legacy protected</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "workspaces")
-    store.deploy(source, slug="legacy-secret", password="opensesame")
+    store.set_workspace_password("workspace-secret")
+    store.deploy(source, slug="legacy-secret")
     with store._connect() as con:
-        con.execute("UPDATE artifacts SET auth_mode = 'public' WHERE slug = 'legacy-secret'")
+        con.execute("UPDATE artifacts SET password_hash = ?, auth_mode = 'public' WHERE slug = 'legacy-secret'", (hash_password("opensesame"),))
     client = TestClient(create_app(tmp_path / "workspaces", cookie_secret="test-secret"))
 
     locked = client.get("/legacy-secret")
-    accepted = client.post("/legacy-secret/login", data={"password": "opensesame"}, follow_redirects=False)
+    rejected_artifact_password = client.post("/legacy-secret/login", data={"password": "opensesame"}, follow_redirects=False)
+    accepted_workspace_password = client.post("/legacy-secret/login", data={"password": "workspace-secret"}, follow_redirects=False)
     unlocked = client.get("/legacy-secret")
 
     assert store.get("legacy-secret").has_password
     assert store.get("legacy-secret").auth_mode == "public"
     assert locked.status_code == 401
-    assert accepted.status_code == 303
+    assert rejected_artifact_password.status_code == 401
+    assert accepted_workspace_password.status_code == 303
     assert unlocked.status_code == 200
     assert "Legacy protected" in unlocked.text
 
@@ -269,7 +273,9 @@ def test_workspaces_import_legacy_copies_existing_artifacts_idempotently(tmp_pat
     (protected_dir / "index.html").write_text("<h1>Protected Legacy</h1>", encoding="utf-8")
     legacy = ArtifactStore(legacy_home)
     legacy.deploy(public_source, slug="public-legacy", title="Public Legacy", description="old public", capabilities=["artifact.describe"], pinned=True)
-    legacy.deploy(protected_dir, slug="secret-legacy", title="Secret Legacy", description="old protected", password="opensesame", capabilities=["kanban.comment"])
+    legacy.deploy(protected_dir, slug="secret-legacy", title="Secret Legacy", description="old protected", capabilities=["kanban.comment"])
+    with legacy._connect() as con:
+        con.execute("UPDATE artifacts SET password_hash = ?, auth_mode = 'custom' WHERE slug = 'secret-legacy'", (hash_password("opensesame"),))
     legacy.archive("secret-legacy", reason="old archive", force=True)
 
     args = [
@@ -302,8 +308,8 @@ def test_workspaces_import_legacy_copies_existing_artifacts_idempotently(tmp_pat
     assert (workspace_home / "sites" / "public-legacy" / "index.html").read_text(encoding="utf-8") == "<h1>Public Legacy</h1>"
     assert secret.status == "archived"
     assert secret.archive_reason == "old archive"
-    assert secret.auth_mode == "custom"
-    assert secret.password_hash == legacy.get("secret-legacy").password_hash
+    assert secret.auth_mode == "profile"
+    assert secret.password_hash is None
     assert (legacy_home / "sites" / "public-legacy" / "index.html").exists()
 
 

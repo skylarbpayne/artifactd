@@ -151,7 +151,7 @@ def test_write_outputs_creates_directory_deployable_index(tmp_path):
     assert "./project-dashboard-wedding.html" not in standalone
 
 
-def test_deploy_outputs_deploys_single_protected_directory_artifact(tmp_path):
+def test_deploy_outputs_deploys_single_directory_artifact_without_individual_password(tmp_path):
     out = tmp_path / "dashboards"
     out.mkdir()
     (out / "index.html").write_text("<h1>Index</h1>", encoding="utf-8")
@@ -159,7 +159,7 @@ def test_deploy_outputs_deploys_single_protected_directory_artifact(tmp_path):
     fake_artifactd = tmp_path / "artifactd"
     log = tmp_path / "args.json"
     fake_artifactd.write_text(
-        "#!/usr/bin/env python3\nimport json,sys,pathlib\npathlib.Path(" + repr(str(log)) + ").write_text(json.dumps(sys.argv[1:]))\nprint('deployed project-dashboards (protected)')\n",
+        "#!/usr/bin/env python3\nimport json,sys,pathlib\npathlib.Path(" + repr(str(log)) + ").write_text(json.dumps(sys.argv[1:]))\nprint('deployed project-dashboards (public)')\n",
         encoding="utf-8",
     )
     fake_artifactd.chmod(0o755)
@@ -167,10 +167,10 @@ def test_deploy_outputs_deploys_single_protected_directory_artifact(tmp_path):
     deployed = deploy_outputs(out, "secret", "https://artifacts.example.com", str(fake_artifactd))
     args = __import__("json").loads(log.read_text(encoding="utf-8"))
 
-    assert deployed == ["deployed project-dashboards (protected)"]
+    assert deployed == ["deployed project-dashboards (public)"]
     assert str(out) in args
     assert "--slug" in args and args[args.index("--slug") + 1] == "project-dashboards"
-    assert "--password" in args and args[args.index("--password") + 1] == "secret"
+    assert "--password" not in args
     assert args.count("--capability") == 4
 
 
@@ -193,5 +193,5 @@ def test_deploy_outputs_deploys_directory_as_single_artifact(tmp_path):
     args = output[0]
     assert f"deploy {out_dir}" in args
     assert "--slug project-dashboards" in args
-    assert "--password secret" in args
+    assert "--password secret" not in args
     assert "project-dashboard-htv" not in args

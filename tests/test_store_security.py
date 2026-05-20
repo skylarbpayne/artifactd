@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from artifactd.security import hash_password, verify_password, sign_artifact_cookie, verify_artifact_cookie
 from artifactd.store import ArtifactStore, sanitize_slug
 
@@ -30,12 +32,21 @@ def test_deploy_single_html_file_creates_artifact(tmp_path: Path):
     source.write_text("<h1>Hello</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "home")
 
-    artifact = store.deploy(source, slug="Demo Artifact", password="secret")
+    artifact = store.deploy(source, slug="Demo Artifact")
 
     assert artifact.slug == "demo-artifact"
-    assert artifact.has_password is True
+    assert artifact.has_password is False
     assert (tmp_path / "home" / "sites" / "demo-artifact" / "index.html").read_text(encoding="utf-8") == "<h1>Hello</h1>"
     assert store.get("demo-artifact").slug == "demo-artifact"
+
+
+def test_deploy_rejects_per_artifact_passwords(tmp_path: Path):
+    source = tmp_path / "demo.html"
+    source.write_text("<h1>Hello</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+
+    with pytest.raises(ValueError, match="per-artifact passwords are disabled"):
+        store.deploy(source, slug="Demo Artifact", password="secret")
 
 
 def test_deploy_stores_description_and_searches_metadata(tmp_path: Path):
@@ -141,7 +152,7 @@ def test_prune_archives_expired_active_artifacts_before_deleting(tmp_path: Path)
     protected_source.write_text("<h1>Protected</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "home")
     store.deploy(public_source, slug="public", expires_at=10)
-    store.deploy(protected_source, slug="protected", password="secret", expires_at=10)
+    store.deploy(protected_source, slug="protected", auth_mode="profile", expires_at=10)
     dry_run = store.prune(now=20, dry_run=True)
     applied = store.prune(now=20, dry_run=False)
 

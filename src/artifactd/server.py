@@ -173,20 +173,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="artifact not found")
         if store.workspace_password_configured() and store.verify_workspace_password(password):
             return _workspace_login_response(secret, f"/{artifact.slug}")
-        if artifact.uses_profile_auth:
-            return _password_page(artifact, status_code=401, message="Wrong password")
-        if not artifact.password_hash or not verify_password(password, artifact.password_hash):
-            return _password_page(artifact, status_code=401, message="Wrong password")
-        response = RedirectResponse(url=f"/{artifact.slug}", status_code=303)
-        response.set_cookie(
-            _cookie_name(artifact.slug),
-            sign_artifact_cookie(artifact.slug, secret),
-            httponly=True,
-            samesite="lax",
-            secure=False,
-            path=f"/{artifact.slug}",
-        )
-        return response
+        return _password_page(artifact, status_code=401, message="Wrong password")
 
     register_action_routes(app, store, secret, kanban_executor=executor)
     register_interactive_routes(app, store, secret)
@@ -615,8 +602,8 @@ def _serve_artifact(store: ArtifactStore, slug: str, relative_path: str, request
         if not store.verify_share_token(artifact.slug, share_token) and not _has_workspace_session(request, secret):
             return _password_page(artifact, status_code=401)
     elif artifact.password_hash:
-        cookie = request.cookies.get(_cookie_name(artifact.slug))
-        if not _has_workspace_session(request, secret) and not verify_artifact_cookie(artifact.slug, cookie, secret):
+        # Legacy per-artifact hashes are no longer accepted. A workspace session is required.
+        if not _has_workspace_session(request, secret):
             return _password_page(artifact, status_code=401)
     try:
         file_path = store.resolve_file(artifact, relative_path)
@@ -647,7 +634,7 @@ def _password_page(artifact: Artifact, *, status_code: int = 401, message: str =
       </head>
       <body>
         <h1>{escaped_message}</h1>
-        <p>This artifact is protected.</p>
+        <p>This artifact is protected by the workspace password.</p>
         <form method="post" action="/{escaped_slug}/login" data-master-password-form data-auto-unlock="{auto_unlock}">
           <input type="password" name="password" autocomplete="current-password" autofocus>
           <button type="submit">Unlock</button>

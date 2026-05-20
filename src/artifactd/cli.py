@@ -155,7 +155,6 @@ def workspaces_register(
     requires_action: bool = typer.Option(False, "--requires-action", help="Surface this Thing in the requires-action bucket."),
     pinned: bool = typer.Option(False, "--pinned", help="Pin this Thing in Home."),
     public: bool = typer.Option(False, "--public", help="Make public instead of profile-auth protected."),
-    password: Optional[str] = typer.Option(None, "--password", help="Use custom password auth instead of profile auth."),
 ):
     workspace_home = resolve_workspace_home(profile, hermes_root=hermes_root, profile_home=profile_home)
     thing = ArtifactStore(workspace_home).register_thing(
@@ -168,7 +167,6 @@ def workspaces_register(
         requires_action=requires_action,
         pinned=pinned,
         public=public,
-        password=password,
     )
     typer.echo(f"profile={profile}")
     typer.echo(f"workspace_home={workspace_home}")
@@ -210,7 +208,6 @@ def deploy(
     slug: str = typer.Option(..., "--slug", "-s", help="Public artifact slug."),
     title: Optional[str] = typer.Option(None, "--title", help="Display title."),
     description: Optional[str] = typer.Option(None, "--description", "-d", help="Short description used on the artifacts home page and search."),
-    password: Optional[str] = typer.Option(None, "--password", help="Protect artifact with this password."),
     capability: Optional[List[str]] = typer.Option(None, "--capability", help="Allow a named server-side action capability. Repeat for multiple."),
     tag: Optional[List[str]] = typer.Option(None, "--tag", help="Organization tag. Repeat for multiple."),
     pinned: bool = typer.Option(False, "--pinned", help="Pin artifact so archive/prune will not move it."),
@@ -218,7 +215,7 @@ def deploy(
     port: int = _port_option,
 ):
     store = ArtifactStore(ctx.obj["home"])
-    artifact = store.deploy(source, slug=slug, title=title, description=description, password=password, capabilities=capability, tags=tag, pinned=pinned, expires_at=expires_at)
+    artifact = store.deploy(source, slug=slug, title=title, description=description, capabilities=capability, tags=tag, pinned=pinned, expires_at=expires_at)
     visibility = _visibility(artifact)
     typer.echo(f"deployed {artifact.slug} ({visibility})")
     typer.echo(f"local_url={_local_url(artifact.slug, port)}")
@@ -257,13 +254,6 @@ def list_artifacts(
             fields.append(artifact.description)
         fields.extend(urls)
         typer.echo("\t".join(fields))
-
-
-@app.command()
-def protect(ctx: typer.Context, slug: str, password: str = typer.Option(..., "--password", prompt=True, hide_input=True)):
-    store = ArtifactStore(ctx.obj["home"])
-    artifact = store.protect(slug, password)
-    typer.echo(f"protected {artifact.slug}")
 
 
 @app.command()
@@ -377,4 +367,4 @@ def _public_url(base_url: str, slug: str) -> str:
 def _visibility(artifact) -> str:
     if getattr(artifact, "uses_profile_auth", False):
         return "protected(profile)"
-    return "protected" if artifact.has_password else "public"
+    return "protected(legacy)" if artifact.has_password else "public"

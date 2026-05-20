@@ -24,7 +24,8 @@ class FakeKanbanExecutor:
 def _deploy_html(tmp_path: Path, store: ArtifactStore, *, slug: str, password: str = "opensesame", capabilities=None):
     source = tmp_path / f"{slug}.html"
     source.write_text(f"<h1>{slug}</h1><script>localStorage.setItem('artifactd:test','1')</script>", encoding="utf-8")
-    return store.deploy(source, slug=slug, password=password, capabilities=capabilities or [])
+    store.set_workspace_password(password)
+    return store.deploy(source, slug=slug, auth_mode="profile", capabilities=capabilities or [])
 
 
 def _login_and_manifest(client: TestClient, slug: str):

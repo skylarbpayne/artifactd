@@ -10,6 +10,10 @@ from artifactd.interactive import _validate_redirect_url
 from artifactd.server import create_app
 from artifactd.store import ArtifactStore
 
+def _deploy_profile_protected(store: ArtifactStore, source: Path, *, slug: str, password: str = "opensesame", capabilities=None):
+    store.set_workspace_password(password)
+    return store.deploy(source, slug=slug, auth_mode="profile", capabilities=capabilities or [])
+
 
 def test_unprotected_artifact_serves_index_and_asset(tmp_path: Path):
     source = tmp_path / "site"
@@ -29,11 +33,11 @@ def test_unprotected_artifact_serves_index_and_asset(tmp_path: Path):
     assert asset.text == "body{}"
 
 
-def test_protected_artifact_requires_password_then_sets_cookie(tmp_path: Path):
+def test_profile_protected_artifact_requires_workspace_password_then_sets_cookie(tmp_path: Path):
     source = tmp_path / "secret.html"
     source.write_text("<h1>Secret</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "home")
-    store.deploy(source, slug="secret", password="opensesame")
+    _deploy_profile_protected(store, source, slug="secret")
     client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
 
     locked = client.get("/secret")
@@ -105,11 +109,11 @@ def test_homepage_hides_archived_artifacts_and_archive_page_lists_them(tmp_path:
     assert "Active Artifact" not in archive.text
 
 
-def test_interactive_gog_endpoint_requires_artifact_password_and_scopes_palmer_accounts(tmp_path: Path):
+def test_interactive_gog_endpoint_requires_workspace_password_and_scopes_palmer_accounts(tmp_path: Path):
     source = tmp_path / "reauth.html"
     source.write_text("<h1>Reauth</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "home")
-    store.deploy(source, slug="gmail-reauth-cockpit", password="opensesame")
+    _deploy_profile_protected(store, source, slug="gmail-reauth-cockpit")
     client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
 
     locked = client.get("/gmail-reauth-cockpit/_interactive/gog/accounts")
@@ -136,7 +140,7 @@ def test_interactive_gog_endpoint_scopes_echo_accounts_and_duplicate_wedding_pro
     source = tmp_path / "reauth.html"
     source.write_text("<h1>Reauth</h1>", encoding="utf-8")
     store = ArtifactStore(echo_home)
-    store.deploy(source, slug="google-auth-repair-center", password="opensesame")
+    _deploy_profile_protected(store, source, slug="google-auth-repair-center")
     client = TestClient(create_app(echo_home, cookie_secret="test-secret"))
 
     locked = client.get("/google-auth-repair-center/_interactive/gog/accounts")
@@ -170,7 +174,7 @@ def test_interactive_gog_start_is_approval_gated_without_capability(tmp_path: Pa
     source = tmp_path / "repair.html"
     source.write_text("<h1>Repair</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "home")
-    store.deploy(source, slug="google-auth-repair-center", password="opensesame")
+    _deploy_profile_protected(store, source, slug="google-auth-repair-center")
     client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
     client.post("/google-auth-repair-center/login", data={"password": "opensesame"}, follow_redirects=False)
 
@@ -194,10 +198,10 @@ def test_interactive_gog_start_is_approval_gated_without_server_approval(tmp_pat
     source = tmp_path / "repair.html"
     source.write_text("<h1>Repair</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "home")
-    store.deploy(
+    _deploy_profile_protected(
+        store,
         source,
         slug="google-auth-repair-center",
-        password="opensesame",
         capabilities=["gog.reauth"],
     )
     client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
@@ -228,12 +232,12 @@ def test_interactive_gog_endpoint_is_only_available_for_reauth_slug(tmp_path: Pa
     assert response.status_code == 404
 
 
-def test_audio_intake_upload_requires_password_and_capability(tmp_path: Path, monkeypatch):
+def test_audio_intake_upload_requires_workspace_password_and_capability(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(interactive, "AUDIO_INTAKE_DIR", tmp_path / "intake")
     source = tmp_path / "intake.html"
     source.write_text("<h1>Meeting Notes Intake</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "home")
-    store.deploy(source, slug="meeting-notes-intake", password="opensesame")
+    _deploy_profile_protected(store, source, slug="meeting-notes-intake")
     client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
 
     locked = client.post(
@@ -256,10 +260,10 @@ def test_audio_intake_upload_saves_metadata_and_status(tmp_path: Path, monkeypat
     source = tmp_path / "intake.html"
     source.write_text("<h1>Meeting Notes Intake</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "home")
-    store.deploy(
+    _deploy_profile_protected(
+        store,
         source,
         slug="meeting-notes-intake",
-        password="opensesame",
         capabilities=["audio.intake"],
     )
     client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
@@ -330,10 +334,10 @@ def test_audio_library_lists_searches_updates_and_downloads_notes(tmp_path: Path
     source = tmp_path / "intake.html"
     source.write_text("<h1>Meeting Notes Intake</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "home")
-    store.deploy(
+    _deploy_profile_protected(
+        store,
         source,
         slug="meeting-notes-intake",
-        password="opensesame",
         capabilities=["audio.intake"],
     )
     upload_id = "20260519-170000-abcdef1234"
