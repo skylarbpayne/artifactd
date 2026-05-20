@@ -236,6 +236,8 @@ def _tool_register_thing(args=None, **kwargs) -> str:
             cmd.extend([flag, str(args[key])])
     for cap in args.get("capabilities") or []:
         cmd.extend(["--capability", str(cap)])
+    for tag in args.get("tags") or []:
+        cmd.extend(["--tag", str(tag)])
     if args.get("requires_action"):
         cmd.append("--requires-action")
     if args.get("pinned"):
@@ -265,6 +267,7 @@ def _register_cli(subparser: argparse.ArgumentParser) -> None:
     reg.add_argument("--title")
     reg.add_argument("--description")
     reg.add_argument("--capability", action="append", dest="capabilities", default=[])
+    reg.add_argument("--tag", action="append", dest="tags", default=[])
     reg.add_argument("--requires-action", action="store_true")
     reg.add_argument("--pinned", action="store_true")
     subparser.set_defaults(func=_cli_command)
@@ -283,6 +286,7 @@ def _cli_command(args: argparse.Namespace) -> int:
             "title": args.title,
             "description": args.description,
             "capabilities": args.capabilities,
+            "tags": args.tags,
             "requires_action": args.requires_action,
             "pinned": args.pinned,
         }))
@@ -324,6 +328,7 @@ _REGISTER_SCHEMA = {
             "title": {"type": "string"},
             "description": {"type": "string"},
             "capabilities": {"type": "array", "items": {"type": "string"}},
+            "tags": {"type": "array", "items": {"type": "string"}},
             "requires_action": {"type": "boolean"},
             "pinned": {"type": "boolean"},
         },

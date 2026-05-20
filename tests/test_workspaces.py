@@ -59,21 +59,48 @@ def test_register_generated_thing_defaults_to_profile_auth_and_workspace_buckets
     assert [item.slug for item in store.list_workspace_things(bucket="recent")] == ["day-plan"]
 
 
-def test_workspace_share_override_token_unlocks_one_profile_protected_thing(tmp_path: Path):
+def test_workspace_tags_are_normalized_persisted_imported_and_filter_with_and_semantics(tmp_path: Path):
+    wedding = tmp_path / "wedding.html"
+    wedding.write_text("<h1>Wedding cockpit</h1>", encoding="utf-8")
+    htv = tmp_path / "htv.html"
+    htv.write_text("<h1>HTV cockpit</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "workspaces")
+
+    thing = store.register_thing(
+        wedding,
+        slug="wedding-cockpit",
+        title="Wedding Cockpit",
+        tags=[" Wedding ", "planning", "PLANNING", "Jacqueline"],
+    )
+    store.register_thing(htv, slug="htv-cockpit", title="HTV Cockpit", tags=["planning", "htv"])
+
+    assert thing.tags == ("wedding", "planning", "jacqueline")
+    assert store.get("wedding-cockpit").tags == ("wedding", "planning", "jacqueline")
+    assert [item.slug for item in store.list_workspace_things(bucket="active", tags=["planning", "wedding"])] == ["wedding-cockpit"]
+    assert store.tag_facets(bucket="active") == {"htv": 1, "jacqueline": 1, "planning": 2, "wedding": 1}
+
+    imported = ArtifactStore(tmp_path / "imported-workspaces")
+    imported.import_legacy_artifacts(store)
+    assert imported.get("wedding-cockpit").tags == ("wedding", "planning", "jacqueline")
+
+
+def test_workspace_share_override_token_unlocks_one_profile_protected_thing_for_one_week_by_default(tmp_path: Path):
     source = tmp_path / "thing.html"
     source.write_text("<h1>Thing</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "workspaces")
     store.set_workspace_password("profile-secret")
     store.register_thing(source, slug="thing", title="Thing")
 
-    token = store.create_share_override("thing", token="share-me")
+    token = store.create_share_override("thing", token="share-me", now=1_000)
     thing = store.get("thing")
 
     assert token == "share-me"
     assert thing.share_token_hash
+    assert thing.share_token_expires_at == 1_000 + 7 * 24 * 60 * 60
     assert "share-me" not in thing.share_token_hash
-    assert store.verify_share_token("thing", "share-me")
-    assert not store.verify_share_token("thing", "wrong")
+    assert store.verify_share_token("thing", "share-me", now=thing.share_token_expires_at - 1)
+    assert not store.verify_share_token("thing", "share-me", now=thing.share_token_expires_at + 1)
+    assert not store.verify_share_token("thing", "wrong", now=1_001)
 
 
 def test_redeploying_existing_public_artifact_with_password_switches_to_custom_auth(tmp_path: Path):
@@ -92,6 +119,8 @@ def test_redeploying_existing_public_artifact_with_password_switches_to_custom_a
 def test_workspace_home_and_profile_session_unlock_generated_things(tmp_path: Path):
     source = tmp_path / "thing.html"
     source.write_text("<h1>Protected thing</h1>", encoding="utf-8")
+    custom_source = tmp_path / "custom.html"
+    custom_source.write_text("<h1>Legacy custom protected thing</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "workspaces")
     store.set_workspace_password("profile-secret")
     store.register_thing(
@@ -102,22 +131,32 @@ def test_workspace_home_and_profile_session_unlock_generated_things(tmp_path: Pa
         capabilities=["artifact.describe"],
         requires_action=True,
     )
+    store.deploy(custom_source, slug="custom-thing", title="Custom Thing", password="custom-secret")
     client = TestClient(create_app(tmp_path / "workspaces", cookie_secret="test-secret"))
 
     locked_home = client.get("/")
     locked_thing = client.get("/protected-thing")
-    accepted = client.post("/_workspace/login", data={"password": "profile-secret"}, follow_redirects=False)
+    locked_custom = client.get("/custom-thing")
+    login_page = client.get("/custom-thing")
+    accepted = client.post("/custom-thing/login", data={"password": "profile-secret"}, follow_redirects=False)
     unlocked_home = client.get("/")
     unlocked_thing = client.get("/protected-thing")
+    unlocked_custom = client.get("/custom-thing")
 
     assert locked_home.status_code == 401
     assert locked_thing.status_code == 401
+    assert locked_custom.status_code == 401
+    assert "artifactd.masterPassword" in login_page.text
+    assert "localStorage" in login_page.text
     assert accepted.status_code == 303
     assert unlocked_home.status_code == 200
-    for label in ["Hermes Home", "Protected Thing", "Open", "Share", "Update", "Pin", "Archive", "Requires action"]:
+    for label in ["Workspace Home", "Protected Thing", "Open", "Share", "Update", "Pin", "Archive", "Requires action"]:
         assert label in unlocked_home.text
+    assert "Hermes Home" not in unlocked_home.text
     assert unlocked_thing.status_code == 200
     assert "Protected thing" in unlocked_thing.text
+    assert unlocked_custom.status_code == 200
+    assert "Legacy custom protected thing" in unlocked_custom.text
 
 
 def test_workspace_share_token_serves_without_profile_session(tmp_path: Path):
@@ -292,6 +331,35 @@ def test_workspace_registry_endpoint_lists_home_buckets_after_profile_login(tmp_
     assert "Needs Review" in pinned_page.text
 
 
+def test_workspace_home_ui_and_json_expose_tag_chips_facets_and_combined_search(tmp_path: Path):
+    wedding = tmp_path / "wedding.html"
+    wedding.write_text("<h1>Wedding</h1>", encoding="utf-8")
+    htv = tmp_path / "htv.html"
+    htv.write_text("<h1>HTV</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "workspaces")
+    store.set_workspace_password("profile-secret")
+    store.register_thing(wedding, slug="wedding-cockpit", title="Wedding Cockpit", description="Today cockpit", tags=["wedding", "planning"])
+    store.register_thing(htv, slug="htv-cockpit", title="HTV Cockpit", description="Today cockpit", tags=["htv", "planning"])
+    client = TestClient(create_app(tmp_path / "workspaces", cookie_secret="test-secret", profile="echo"))
+
+    client.post("/_workspace/login", data={"password": "profile-secret"}, follow_redirects=False)
+    home_page = client.get("/?q=cockpit&tag=wedding&tag=planning")
+    home_payload = client.get("/_workspace/home?q=cockpit&tag=wedding&tag=planning").json()
+    things_payload = client.get("/_workspace/things?q=cockpit&tag=wedding&tag=planning").json()
+
+    assert home_page.status_code == 200
+    assert "Wedding Cockpit" in home_page.text
+    assert "HTV Cockpit" not in home_page.text
+    assert "tag-chip selected" in home_page.text
+    assert "data-tag-filter" in home_page.text
+    assert "wedding <span>1</span>" in home_page.text
+    assert home_payload["selected_tags"] == ["wedding", "planning"]
+    assert home_payload["tag_facets"] == {"htv": 1, "planning": 2, "wedding": 1}
+    assert home_payload["buckets"]["active"][0]["tags"] == ["wedding", "planning"]
+    assert [item["slug"] for item in things_payload["buckets"]["active"]] == ["wedding-cockpit"]
+    assert things_payload["tag_facets"] == {"htv": 1, "planning": 2, "wedding": 1}
+
+
 def test_workspace_home_dashboard_endpoint_exposes_things_actions_and_bridge_metadata(tmp_path: Path):
     source = tmp_path / "day.html"
     source.write_text("<h1>Day</h1>", encoding="utf-8")
@@ -320,6 +388,7 @@ def test_workspace_home_dashboard_endpoint_exposes_things_actions_and_bridge_met
     assert "profile=echo" in home_page.text
     payload = response.json()
     assert payload["kind"] == "HermesWorkspaceHome"
+    assert payload["title"] == "Workspace Home"
     assert payload["profile"] == "echo"
     assert payload["language"] == {"home": "Home", "thing": "Thing", "things": "Things"}
     assert payload["counts"]["requires-action"] == 1
@@ -399,6 +468,7 @@ def test_workspace_home_forms_pin_share_requires_action_and_archive_with_csrf(tm
     assert actioned.status_code == 303
     assert share.status_code == 200
     assert "Share link created" in share.text
+    assert "Expires in 7 days" in share.text
     assert token_match
     assert client.get(f"/thing?share={token_match.group(1)}").status_code == 200
     thing = store.get("thing")

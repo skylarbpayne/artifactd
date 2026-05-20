@@ -1,153 +1,224 @@
 # artifactd
 
-Tiny local artifact server for agent-produced HTML artifacts.
+`artifactd` is a small workspace runtime for agent-generated **Things**: HTML/JS/CSS artifacts that agents can create, protect, organize, share, and revisit.
+
+It is meant to be boring infrastructure: a local FastAPI sidecar, SQLite metadata, static file serving, a profile/workspace password, expiring share links, tag filters, and a thin capability bridge back into the owning Hermes profile.
+
+## Repository
+
+```text
+https://github.com/skylarbpayne/artifactd
+```
+
+The repo is currently private. To point another agent/person at it, give their GitHub account or deploy key read access first.
 
 ## What it does
 
 - Deploy a single `.html` file or a directory with `index.html`.
-- Serve artifacts locally from SQLite metadata + static files.
-- Browse active artifacts from a searchable home page, with archived artifacts separated at `/archive`.
-- Store searchable titles, descriptions, lifecycle status, pinning, expiration metadata, and explicit action capabilities for each artifact.
-- Protect artifacts with either legacy per-artifact passwords or the newer profile/workspace password session.
-- Register generated workspace “Things” for Hermes Home-style open/share/update/pin/archive flows.
-- Allow browser-side interactivity in artifacts: JS, filters, localStorage, forms, and visual review controls.
-- Expose a small safe server-action layer for protected artifacts only (`/{slug}/_actions`) with CSRF, explicit capabilities, validation, and audit logs.
-- Expose the local server through Cloudflare Tunnel.
+- Serve artifacts from SQLite metadata + managed static files.
+- Provide a protected **Workspace Home** at `/` for open/search/update/share/pin/archive flows.
+- Store titles, descriptions, lifecycle status, pinning, expiration, capabilities, and flexible tags.
+- Filter Things by tag(s), with text search composing with tag filters.
+- Use one workspace/master password per profile by default.
+- Save master-password UX client-side via `localStorage`; server stores password hashes only.
+- Generate randomized expiring share links; default share TTL is 7 days.
+- Expose safe server-side actions only through explicit capabilities + CSRF + audit logs.
+- Install as a Hermes profile-local plugin wrapper without patching Hermes core.
+- Expose over Tailscale Serve/Funnel or Cloudflare Tunnel.
 
-## Install for development
-
-```bash
-cd /Users/skylarpayne/artifactd
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e '.[dev]'
-```
-
-## Use
-
-```bash
-# Start local server
-ARTIFACTD_COOKIE_SECRET="change-me" \
-ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" \
-artifactd serve --port 8787
-
-# Deploy a public artifact
-ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./demo.html --slug demo --title "Demo" --description "Visual review board for the demo"
-
-# Deploy a protected artifact
-ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./dist --slug investor-memo --title "Investor Memo" --description "Protected investor memo review surface" --password "secret"
-
-# Deploy a protected action-capable artifact
-ARTIFACTD_PUBLIC_BASE_URL="https://artifacts.skylarbpayne.com" artifactd deploy ./dashboard.html --slug project-dashboard --title "Project Dashboard" --description "Protected project command surface" --password "secret" --capability artifact.describe --capability artifact.archive --capability kanban.comment
-
-# Manage artifacts
-artifactd list
-artifactd list --status archived
-artifactd describe demo --title "Demo v2" --description "Updated searchable description"
-artifactd describe demo --pinned --expires-at 1798761600
-artifactd archive demo
-artifactd restore demo
-artifactd prune --dry-run
-artifactd prune --apply
-artifactd protect demo --password "new-secret"
-artifactd unprotect demo
-artifactd delete demo
-```
-
-When `ARTIFACTD_PUBLIC_BASE_URL` or `--public-base-url` is set, deploy/list also prints the public HTTPS URL. The root path (`/`) is a searchable active-artifact home page; `/archive` lists archived artifacts. Search matches slug, title, and description.
-
-`prune --dry-run` previews lifecycle actions. `prune --apply` archives expired active artifacts first, skips pinned artifacts, and will not delete protected artifacts automatically; expired public artifacts are only deletable after they are already archived.
-
-Default storage lives at:
+## Architecture in one minute
 
 ```text
-~/.hermes/artifacts/
-├── artifacts.db
-└── sites/<slug>/index.html
+agent / Hermes profile
+        │
+        │ creates HTML + metadata
+        ▼
+artifactd CLI / plugin tool
+        │
+        ├── SQLite metadata: title, desc, tags, auth, share token hashes, capabilities
+        ├── static files: sites/<slug>/index.html
+        └── FastAPI server: Workspace Home, protected Things, share links, actions
+                 │
+                 ├── Tailscale Serve/Funnel, preferred for Safrin-style private deployments
+                 └── Cloudflare Tunnel, used by Skylar/Palmer/Echo today
 ```
 
-Override with:
+Generated Things are **not** Hermes plugins. `artifactd` is the installable sidecar/plugin package; Things are the fast generated surfaces it hosts.
+
+## Install for an agent/profile
+
+Prereqs:
+
+- Python 3.9+
+- GitHub read access to `skylarbpayne/artifactd`
+- `git`
+- optional but recommended: `tailscale` for private tailnet exposure
+
+Clone and install:
 
 ```bash
-ARTIFACTD_HOME=/path/to/artifacts artifactd list
-# or
-artifactd --home /path/to/artifacts list
-```
+git clone git@github.com:skylarbpayne/artifactd.git
+cd artifactd
 
-## Hermes Workspaces plugin
-
-Workspaces are the profile-scoped path toward “one Hermes Home for things the agent made.” The generated Things are HTML/JS/CSS surfaces; the installable integration is this `artifactd` sidecar/plugin package. It is cloneable, smoke-testable, and installable into a Hermes profile without patching Hermes core.
-
-```bash
-# From a clone or this checkout
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e '.[dev]'
 
-# Create/check a profile-scoped workspace home without touching production state
-TMPDIR=$(mktemp -d)
-artifactd workspaces smoke --profile echo --hermes-root "$TMPDIR/.hermes" --password "dev-only"
-artifactd workspaces status --profile echo --hermes-root "$TMPDIR/.hermes"
-artifactd workspaces home --profile echo --hermes-root "$TMPDIR/.hermes"
-artifactd workspaces start --profile echo --hermes-root "$TMPDIR/.hermes" --port 8788
+pytest tests -q
+artifactd --help
+```
 
-# Install the profile-local Hermes plugin wrapper from this package
+If SSH auth is not set up, use HTTPS instead:
+
+```bash
+git clone https://github.com/skylarbpayne/artifactd.git
+```
+
+## Quick start for Safrin
+
+This creates an isolated Safrin workspace, installs the Hermes plugin wrapper, and prepares a local server on port `8789`.
+
+```bash
+cd artifactd
+. .venv/bin/activate
+
+PROFILE=safrin
+PORT=8789
+HERMES_ROOT="${HERMES_ROOT:-$HOME/.hermes}"
+WORKSPACE_HOME="$HERMES_ROOT/profiles/$PROFILE/workspaces"
+
+# Store this outside git. Do not hardcode shared passwords into the repo.
+export ARTIFACTD_WORKSPACE_PASSWORD='<choose-or-provide-workspace-password>'
+
+artifactd workspaces install \
+  --profile "$PROFILE" \
+  --hermes-root "$HERMES_ROOT" \
+  --password "$ARTIFACTD_WORKSPACE_PASSWORD"
+
+artifactd workspaces smoke \
+  --profile "$PROFILE" \
+  --hermes-root "$HERMES_ROOT" \
+  --password "$ARTIFACTD_WORKSPACE_PASSWORD"
+
 artifactd workspaces install-plugin \
-  --profile echo \
-  --hermes-root "$TMPDIR/.hermes" \
+  --profile "$PROFILE" \
+  --hermes-root "$HERMES_ROOT" \
   --runtime-path "$(command -v artifactd)" \
-  --port 8788 \
+  --port "$PORT" \
   --enable
 ```
 
-The default profile layout is:
-
-```text
-~/.hermes/profiles/<profile>/workspaces/
-├── artifacts.db
-├── sites/<thing-slug>/index.html
-└── .smoke-source/            # only created by smoke tests
-```
-
-Useful commands:
+Create a persistent cookie secret and start the local server:
 
 ```bash
-artifactd workspaces install --profile palmer --password "<store outside git>"
-artifactd workspaces status --profile palmer
-artifactd workspaces home --profile palmer
-artifactd workspaces import-legacy --profile palmer --from-home /Users/skylarpayne/.hermes/artifacts
-artifactd workspaces register ./dist/daily.html --profile palmer --slug daily --title "Daily cockpit"
-artifactd workspaces install-plugin \
-  --profile palmer \
-  --runtime-path /Users/skylarpayne/artifactd/.venv/bin/artifactd \
-  --port 8787 \
-  --public-base-url https://artifacts.skylarbpayne.com \
-  --enable
-artifactd workspaces start --profile palmer --port 8787
-artifactd --home ~/.hermes/profiles/palmer/workspaces serve --profile palmer --port 8787
+mkdir -p "$WORKSPACE_HOME"
+if [ ! -f "$WORKSPACE_HOME/.cookie-secret" ]; then
+  python - <<'PY' > "$WORKSPACE_HOME/.cookie-secret"
+import secrets
+print(secrets.token_urlsafe(48))
+PY
+  chmod 600 "$WORKSPACE_HOME/.cookie-secret"
+fi
+
+ARTIFACTD_PROFILE="$PROFILE" \
+ARTIFACTD_COOKIE_SECRET="$(cat "$WORKSPACE_HOME/.cookie-secret")" \
+artifactd --home "$WORKSPACE_HOME" serve --profile "$PROFILE" --port "$PORT"
 ```
 
-Current Workspaces behavior:
+In production, run that final command under the machine's process manager: `launchd` on macOS, `systemd` on Linux, or the profile's existing service runner.
 
-- profile names are validated before paths are derived;
-- `--hermes-root <root>` maps to `<root>/profiles/<profile>`;
-- generated Things default to profile/workspace auth;
-- `artifactd workspaces register` turns existing HTML files/directories into profile-auth Things;
-- `artifactd workspaces import-legacy` non-destructively copies an existing artifactd home into a profile Workspaces registry while preserving titles, descriptions, status, pinning, capabilities, and legacy auth metadata;
-- `artifactd workspaces install-plugin` writes a profile-local Hermes plugin wrapper under `$HERMES_HOME/plugins/artifactd_workspaces` and can enable it via `plugins.enabled`;
-- the package also exposes a `hermes_agent.plugins` entry point named `artifactd_workspaces` for pip-installed Hermes plugin discovery;
-- one workspace session can unlock profile-auth Things;
-- single-Thing share override tokens are available for explicit sharing;
-- legacy custom-password artifacts remain compatible;
-- Home exposes Open, Share, Update, Pin, Requires action, and Archive controls;
-- `GET /_workspace/home` returns first-class Home/Things dashboard JSON with profile bridge/capability metadata;
-- `GET /_workspace/things` returns dashboard-friendly buckets/counts.
+## Deploy/register a Thing
 
-This is the correct plugin-first path: `artifactd` is the separately installable sidecar/plugin package, generated Things are not Hermes plugins, and Hermes core is not modified for Workspaces.
+For profile/workspace auth, use `workspaces register` rather than legacy public deploys:
+
+```bash
+artifactd workspaces register ./dist/my-dashboard \
+  --profile safrin \
+  --hermes-root "$HOME/.hermes" \
+  --slug my-dashboard \
+  --title "My Dashboard" \
+  --description "Review surface generated by Safrin" \
+  --tag dashboard \
+  --tag review \
+  --pinned \
+  --capability artifact.describe \
+  --capability artifact.archive
+```
+
+Multiple `--tag` values are normalized, deduped, shown as chips on Workspace Home, and filter with AND semantics when multiple tags are selected.
+
+Useful metadata updates use the same underlying store. For a workspace profile, point `artifactd` at the workspace home:
+
+```bash
+artifactd --home "$WORKSPACE_HOME" describe my-dashboard --tag dashboard --tag safrin --tag review
+artifactd --home "$WORKSPACE_HOME" describe my-dashboard --title "Updated title" --description "Updated searchable description"
+```
+
+You can also re-run `artifactd workspaces register ...` with the same slug to update the generated Thing from a new source directory.
+
+## Tailscale deployment
+
+For Safrin, prefer Tailscale over Cloudflare. There are two modes:
+
+1. **Tailscale Serve** — private to the tailnet. This is the default recommendation.
+2. **Tailscale Funnel** — public internet exposure through Tailscale. Use only when the artifact surface needs a public URL.
+
+Start `artifactd` locally first, for example on `127.0.0.1:8789`, then expose it.
+
+### Private tailnet URL
+
+```bash
+# Expose local artifactd to devices/users in the tailnet.
+tailscale serve --bg 8789
+
+# Inspect the assigned HTTPS URL and config.
+tailscale serve status
+```
+
+Typical URL shape:
+
+```text
+https://<machine-name>.<tailnet-name>.ts.net/
+```
+
+Use that as the public base URL for Safrin's profile-local plugin if other tailnet devices should open generated Things:
+
+```bash
+artifactd workspaces install-plugin \
+  --profile safrin \
+  --runtime-path "$(command -v artifactd)" \
+  --port 8789 \
+  --public-base-url "https://<machine-name>.<tailnet-name>.ts.net" \
+  --enable
+```
+
+### Public Tailscale Funnel URL
+
+Only use Funnel if you intentionally want internet exposure:
+
+```bash
+tailscale funnel --bg 8789
+tailscale funnel status
+```
+
+Security posture stays the same either way:
+
+- Workspace Home and profile-auth Things require the workspace password/session.
+- Share links are randomized and expire after 7 days by default.
+- Do not create per-Thing password files for normal sharing.
+- Do not expose a public deploy API.
+
+### Reset Tailscale exposure
+
+```bash
+tailscale serve reset
+tailscale funnel reset
+```
 
 ## Cloudflare Tunnel
+
+Cloudflare is still supported and is what Skylar's current Palmer/Echo public artifact surfaces use, but it is not required for Safrin.
 
 Development quick tunnel:
 
@@ -163,51 +234,82 @@ HOME=/Users/skylarpayne cloudflared tunnel route dns --overwrite-dns <tunnel-id>
 HOME=/Users/skylarpayne cloudflared tunnel --config ~/.cloudflared/artifacts.yml run <tunnel-id>
 ```
 
-Use the tunnel ID explicitly when another `~/.cloudflared/config.yml` exists; relying on the tunnel name can accidentally target the default config's tunnel. Ask me how I know.
+Use the tunnel ID explicitly when another `~/.cloudflared/config.yml` exists; relying on the tunnel name can accidentally target the default config's tunnel.
 
-There is a starter config at `cloudflare/artifacts.example.yml` for a durable named tunnel.
-The production setup on Skylar's headless Mac mini uses **system LaunchDaemons**, not GUI LaunchAgents:
+## Local CLI basics
 
-```text
-/Users/skylarpayne/.hermes/artifacts/.cookie-secret
-/Users/skylarpayne/.cloudflared/artifacts.yml
-/Library/LaunchDaemons/com.skylar.artifactd.plist
-/Library/LaunchDaemons/com.skylar.artifactd-tunnel.plist
-```
-
-Install/reload both LaunchDaemons with:
+Legacy/standalone artifact home mode still exists:
 
 ```bash
-scripts/install-launchdaemons.sh
+# Start local server
+ARTIFACTD_COOKIE_SECRET="change-me" artifactd serve --port 8787
+
+# Deploy public artifact
+artifactd deploy ./demo.html --slug demo --title "Demo" --description "Visual review board" --tag demo
+
+# Deploy custom-password artifact; prefer workspace auth for normal agent Things
+artifactd deploy ./dist --slug investor-memo --title "Investor Memo" --password "secret"
+
+# Manage artifacts
+artifactd list
+artifactd list --status archived
+artifactd describe demo --title "Demo v2" --description "Updated searchable description" --tag demo --tag review
+artifactd archive demo
+artifactd restore demo
+artifactd prune --dry-run
+artifactd delete demo
 ```
 
-The installer uses `sudo`, installs root-owned plists into `/Library/LaunchDaemons`, loads them into the `system` launchd domain, runs both daemons as `skylarpayne`, removes stale GUI LaunchAgent copies from the earlier laptop-oriented setup, and verifies local + tunnel health.
-
-Repo copies of the LaunchDaemon plists live under `launchd/`; `scripts/install-launchagents.sh` is kept only as a deprecated compatibility wrapper that delegates to `scripts/install-launchdaemons.sh`.
-
-Then artifacts are available as:
+Default standalone storage:
 
 ```text
-https://artifacts.skylarbpayne.com/<slug>
+~/.hermes/artifacts/
+├── artifacts.db
+└── sites/<slug>/index.html
 ```
 
-## Interactivity model
-
-Artifacts can use normal browser interactivity freely: JavaScript, tabs, filters, calculators, annotations, localStorage checklists, and form UX. That is still static artifact code running in the browser.
-
-For server-side effects, use the explicit capability layer:
+Override with:
 
 ```bash
-artifactd deploy ./dashboard.html \
-  --slug project-dashboard \
-  --password "secret" \
-  --capability artifact.describe \
-  --capability artifact.archive \
-  --capability kanban.comment \
-  --capability kanban.create_task
+ARTIFACTD_HOME=/path/to/artifacts artifactd list
+artifactd --home /path/to/artifacts list
 ```
 
-The protected artifact can then fetch:
+## Hermes Workspaces plugin
+
+Workspaces are the profile-scoped path toward “one Home for things the agent made.” The integration is plugin-first and does not require Hermes core edits.
+
+Useful commands:
+
+```bash
+artifactd workspaces install --profile palmer --password "<store outside git>"
+artifactd workspaces status --profile palmer
+artifactd workspaces home --profile palmer
+artifactd workspaces smoke --profile palmer --password "<dev-only>"
+artifactd workspaces import-legacy --profile palmer --from-home /Users/skylarpayne/.hermes/artifacts
+artifactd workspaces register ./dist/daily.html --profile palmer --slug daily --title "Daily cockpit" --tag daily --tag planning
+artifactd workspaces install-plugin --profile palmer --runtime-path /Users/skylarpayne/artifactd/.venv/bin/artifactd --port 8787 --enable
+artifactd workspaces start --profile palmer --port 8787
+```
+
+Current Workspaces behavior:
+
+- profile names are validated before paths are derived;
+- generated Things default to profile/workspace auth;
+- one workspace session unlocks profile-auth Things;
+- `localStorage['artifactd.masterPassword']` is used only for browser convenience;
+- share links are random, hash-stored server-side, and expire after 7 days by default;
+- tags are flexible metadata and filters, not a rigid folder hierarchy;
+- Home exposes Open, Share, Update, Pin, Requires action, Archive, tag chips, and tag facets;
+- `GET /_workspace/home` returns dashboard JSON with profile bridge/capability metadata;
+- `GET /_workspace/things` returns dashboard-friendly buckets/counts/tag facets;
+- server-side capability actions require protected access, CSRF, explicit capability names, and audit rows.
+
+## Action capability model
+
+Artifacts can use normal browser interactivity freely: JavaScript, tabs, filters, calculators, annotations, localStorage checklists, and form UX.
+
+Server-side effects go through the fixed capability layer:
 
 ```text
 GET  /<slug>/_actions
@@ -218,75 +320,49 @@ Current executable capabilities:
 
 - `artifact.describe` — update title/description metadata.
 - `artifact.archive` — archive the current artifact.
-- `kanban.comment` — append to a specific Hermes Kanban task.
-- `kanban.create_task` — create a Hermes Kanban task with explicit assignee/parents/priority.
+- `kanban.comment` — append to a Hermes Kanban task.
+- `kanban.create_task` — create a Hermes Kanban task.
 
-`draft.email` exists only as an approval-gated placeholder and returns `approval required`. Sends, publishing, scheduling, purchases, and credentials stay outside direct artifact execution.
+`draft.email` exists only as an approval-gated placeholder. Sends, publishing, scheduling, purchases, and credentials stay outside direct artifact execution.
 
-## Project dashboard generator
+## Current Skylar deployments
 
-The repo includes a static cockpit generator for recurring project surfaces. It reads Skyvault project notes, Hermes Kanban tasks, artifact metadata, and CRM/entity wikilinks, then writes a deployable multi-page directory. Skyvault/Kanban stay truth; the generated pages are the visual/action surface.
-
-```bash
-cd /Users/skylarpayne/artifactd
-. .venv/bin/activate
-python scripts/project_dashboard_generator.py \
-  --out dist/project-dashboards \
-  --deploy \
-  --password "$(cat /path/to/dashboard-password)"
-```
-
-Default output/deploy target:
+Palmer:
 
 ```text
-dist/project-dashboards/index.html
-https://artifacts.skylarbpayne.com/project-dashboards
+storage: /Users/skylarpayne/.hermes/artifacts
+origin:  http://127.0.0.1:8787
+public:  https://artifacts.skylarbpayne.com/<slug>
+service: /Library/LaunchDaemons/com.skylar.artifactd.plist
 ```
 
-Initial dashboards are Hack the Valley and Our Wedding. The deployed artifact is protected and pinned by default when generated with `--deploy`.
-
-## Echo / Agora Comms artifact surface
-
-Echo uses the same `artifactd` codebase with isolated storage and a separate Cloudflare Tunnel:
+Echo:
 
 ```text
-storage:  /Users/skylarpayne/.hermes/profiles/echo/artifacts
-origin:   http://127.0.0.1:8788
-public:   https://artifacts.agoracomms.com/<slug>
-tunnel:   f49229f5-9211-4551-b56b-d28d3c3ea99b
-config:   /Users/skylarpayne/.cloudflared/echo-artifacts.yml
-plists:   /Library/LaunchDaemons/com.skylar.echo-artifactd.plist
-          /Library/LaunchDaemons/com.skylar.echo-artifactd-tunnel.plist
+storage: /Users/skylarpayne/.hermes/profiles/echo/artifacts
+origin:  http://127.0.0.1:8788
+public:  https://artifacts.agoracomms.com/<slug>
+service: /Library/LaunchDaemons/com.skylar.echo-artifactd.plist
 ```
 
-Local deploy example:
-
-```bash
-/Users/skylarpayne/artifactd/.venv/bin/artifactd \
-  --home /Users/skylarpayne/.hermes/profiles/echo/artifacts \
-  --public-base-url https://artifacts.agoracomms.com \
-  deploy ./demo.html --slug demo --port 8788
-```
-
-Install/reload Echo's system LaunchDaemons with sudo/root:
-
-```bash
-cd /Users/skylarpayne/artifactd
-sudo scripts/install-echo-launchdaemons.sh
-```
+Those use Cloudflare today. Safrin should use the Tailscale section above unless there is an explicit reason to make artifacts public.
 
 ## Security notes
 
-- Deploy is local CLI only in this MVP. There is no public deploy API.
-- Passwords are stored as PBKDF2-SHA256 hashes with random salts.
-- Artifact auth uses signed HttpOnly cookies scoped to the artifact path.
-- Server-side action capabilities are disabled unless explicitly enabled on a protected artifact; every action requires artifact auth + CSRF and writes an audit row with a payload hash, not raw submitted content.
+- Deploy/register is local CLI/plugin only. There is no public deploy API.
+- Workspace/master passwords are stored as hashes only.
+- Browser password auto-fill uses `localStorage` for UX; the server never stores plaintext passwords.
+- Default profile-auth Things should not get artifact-specific password files.
+- Share tokens are random, stored only as hashes, and expire.
+- Server-side actions require auth + CSRF + declared capability + audit logging.
 - Slugs are sanitized and file serving is constrained to the artifact root.
-- Artifact HTML may run browser-side JavaScript. Server-side execution is limited to the fixed capability registry; there is no arbitrary generated-code execution and no public deploy API.
+- Artifact HTML may run browser-side JavaScript. Server-side execution is limited to the fixed capability registry.
 
 ## Test
 
 ```bash
 . .venv/bin/activate
 pytest tests -q
+python -m py_compile src/artifactd/*.py
+git diff --check
 ```

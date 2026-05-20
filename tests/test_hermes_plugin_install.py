@@ -45,6 +45,10 @@ def test_workspaces_register_command_creates_profile_auth_thing(tmp_path: Path):
             "Profile-owned generated Thing",
             "--capability",
             "kanban.comment",
+            "--tag",
+            "Planning",
+            "--tag",
+            "wedding",
             "--requires-action",
             "--pinned",
         ],
@@ -57,6 +61,7 @@ def test_workspaces_register_command_creates_profile_auth_thing(tmp_path: Path):
     assert thing.title == "Daily cockpit"
     assert thing.description == "Profile-owned generated Thing"
     assert thing.capabilities == ("kanban.comment",)
+    assert thing.tags == ("planning", "wedding")
     assert thing.requires_action is True
     assert thing.pinned is True
     assert f"workspace_home={workspace_home}" in result.output

@@ -151,6 +151,7 @@ def workspaces_register(
     title: Optional[str] = typer.Option(None, "--title", help="Display title."),
     description: Optional[str] = typer.Option(None, "--description", help="Short searchable description."),
     capability: Optional[List[str]] = typer.Option(None, "--capability", help="Allowed named server-side capability. Repeat for multiple."),
+    tag: Optional[List[str]] = typer.Option(None, "--tag", help="Organization tag. Repeat for multiple."),
     requires_action: bool = typer.Option(False, "--requires-action", help="Surface this Thing in the requires-action bucket."),
     pinned: bool = typer.Option(False, "--pinned", help="Pin this Thing in Home."),
     public: bool = typer.Option(False, "--public", help="Make public instead of profile-auth protected."),
@@ -163,6 +164,7 @@ def workspaces_register(
         title=title,
         description=description,
         capabilities=capability,
+        tags=tag,
         requires_action=requires_action,
         pinned=pinned,
         public=public,
@@ -210,12 +212,13 @@ def deploy(
     description: Optional[str] = typer.Option(None, "--description", "-d", help="Short description used on the artifacts home page and search."),
     password: Optional[str] = typer.Option(None, "--password", help="Protect artifact with this password."),
     capability: Optional[List[str]] = typer.Option(None, "--capability", help="Allow a named server-side action capability. Repeat for multiple."),
+    tag: Optional[List[str]] = typer.Option(None, "--tag", help="Organization tag. Repeat for multiple."),
     pinned: bool = typer.Option(False, "--pinned", help="Pin artifact so archive/prune will not move it."),
     expires_at: Optional[int] = typer.Option(None, "--expires-at", help="Unix timestamp when prune should archive/delete this artifact."),
     port: int = _port_option,
 ):
     store = ArtifactStore(ctx.obj["home"])
-    artifact = store.deploy(source, slug=slug, title=title, description=description, password=password, capabilities=capability, pinned=pinned, expires_at=expires_at)
+    artifact = store.deploy(source, slug=slug, title=title, description=description, password=password, capabilities=capability, tags=tag, pinned=pinned, expires_at=expires_at)
     visibility = _visibility(artifact)
     typer.echo(f"deployed {artifact.slug} ({visibility})")
     typer.echo(f"local_url={_local_url(artifact.slug, port)}")
@@ -246,6 +249,8 @@ def list_artifacts(
             fields.append(f"expires_at={artifact.expires_at}")
         if artifact.capabilities:
             fields.append("actions=" + ",".join(artifact.capabilities))
+        if artifact.tags:
+            fields.append("tags=" + ",".join(artifact.tags))
         if artifact.title:
             fields.append(artifact.title)
         if artifact.description:
@@ -274,14 +279,15 @@ def describe(
     slug: str,
     title: Optional[str] = typer.Option(None, "--title", help="Updated display title."),
     description: Optional[str] = typer.Option(None, "--description", "-d", help="Updated searchable description."),
+    tag: Optional[List[str]] = typer.Option(None, "--tag", help="Replace organization tags. Repeat for multiple."),
     pinned: Optional[bool] = typer.Option(None, "--pinned/--unpinned", help="Pin or unpin artifact."),
     expires_at: Optional[int] = typer.Option(None, "--expires-at", help="Updated Unix expiration timestamp."),
     clear_expires_at: bool = typer.Option(False, "--clear-expires-at", help="Remove expiration timestamp."),
 ):
-    if title is None and description is None and pinned is None and expires_at is None and not clear_expires_at:
-        raise typer.BadParameter("provide --title, --description, --pinned/--unpinned, --expires-at, or --clear-expires-at")
+    if title is None and description is None and tag is None and pinned is None and expires_at is None and not clear_expires_at:
+        raise typer.BadParameter("provide --title, --description, --tag, --pinned/--unpinned, --expires-at, or --clear-expires-at")
     store = ArtifactStore(ctx.obj["home"])
-    artifact = store.update_metadata(slug, title=title, description=description, pinned=pinned, expires_at=expires_at, clear_expires_at=clear_expires_at)
+    artifact = store.update_metadata(slug, title=title, description=description, tags=tag, pinned=pinned, expires_at=expires_at, clear_expires_at=clear_expires_at)
     typer.echo(f"updated {artifact.slug}")
 
 

@@ -74,6 +74,7 @@ def _tool_smoke(args: Optional[dict[str, Any]] = None, **kwargs) -> str:
             title="Hermes Workspaces smoke",
             description="Protected smoke Thing for profile-scoped Hermes Workspaces.",
             capabilities=["artifact.describe"],
+            tags=["smoke"],
         )
         return _json({"success": True, "workspace_home": str(home), "slug": thing.slug, "auth_mode": thing.auth_mode})
     except Exception as exc:
@@ -94,6 +95,7 @@ def _tool_register_thing(args: Optional[dict[str, Any]] = None, **kwargs) -> str
             title=args.get("title"),
             description=args.get("description"),
             capabilities=args.get("capabilities") or [],
+            tags=args.get("tags") or [],
             requires_action=bool(args.get("requires_action", False)),
             pinned=bool(args.get("pinned", False)),
         )
@@ -113,6 +115,7 @@ def _thing_payload(artifact: Artifact) -> dict[str, object]:
         "pinned": artifact.pinned,
         "requires_action": artifact.requires_action,
         "capabilities": list(artifact.capabilities),
+        "tags": list(artifact.tags),
         "open_url": f"/{artifact.slug}",
         "actions_url": f"/{artifact.slug}/_actions",
         "updated_at": artifact.updated_at,
@@ -131,6 +134,7 @@ def _home_payload(store: ArtifactStore, *, profile: str) -> dict[str, object]:
             "requires-action": len(store.list_workspace_things(bucket="requires-action")),
             "archived": len(store.list_workspace_things(bucket="archived")),
         },
+        "tag_facets": store.tag_facets(bucket="active"),
         "buckets": {
             "active": [_thing_payload(item) for item in store.list_workspace_things(bucket="active")],
             "pinned": [_thing_payload(item) for item in store.list_workspace_things(bucket="pinned")],
@@ -161,6 +165,7 @@ def _register_cli(subparser: argparse.ArgumentParser) -> None:
     reg.add_argument("--title")
     reg.add_argument("--description")
     reg.add_argument("--capability", action="append", dest="capabilities", default=[])
+    reg.add_argument("--tag", action="append", dest="tags", default=[])
     reg.add_argument("--requires-action", action="store_true")
     reg.add_argument("--pinned", action="store_true")
     subparser.set_defaults(func=_cli_command)
@@ -182,6 +187,7 @@ def _cli_command(args: argparse.Namespace) -> int:
                     "title": args.title,
                     "description": args.description,
                     "capabilities": args.capabilities,
+                    "tags": args.tags,
                     "requires_action": args.requires_action,
                     "pinned": args.pinned,
                 }
@@ -243,6 +249,7 @@ _REGISTER_SCHEMA = {
             "title": {"type": "string"},
             "description": {"type": "string"},
             "capabilities": {"type": "array", "items": {"type": "string"}},
+            "tags": {"type": "array", "items": {"type": "string"}},
             "requires_action": {"type": "boolean"},
             "pinned": {"type": "boolean"},
             "hermes_root": {"type": "string"},

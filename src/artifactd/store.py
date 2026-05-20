@@ -28,11 +28,13 @@ class Artifact:
     archived_at: Optional[int] = None
     archive_reason: Optional[str] = None
     capabilities: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
     pinned: bool = False
     expires_at: Optional[int] = None
     auth_mode: str = "public"
     requires_action: bool = False
     share_token_hash: Optional[str] = None
+    share_token_expires_at: Optional[int] = None
 
     @property
     def has_password(self) -> bool:
@@ -88,6 +90,7 @@ class ArtifactStore:
         description: Optional[str] = None,
         password: Optional[str] = None,
         capabilities: Optional[Sequence[str]] = None,
+        tags: Optional[Sequence[str]] = None,
         pinned: bool = False,
         expires_at: Optional[int] = None,
         auth_mode: Optional[str] = None,
@@ -139,11 +142,13 @@ class ArtifactStore:
             archived_at=None,
             archive_reason=None,
             capabilities=tuple(capabilities) if capabilities is not None else (existing.capabilities if existing else ()),
+            tags=_normalize_tags(tags) if tags is not None else (existing.tags if existing else ()),
             pinned=bool(pinned or (existing.pinned if existing else False)),
             expires_at=expires_at if expires_at is not None else (existing.expires_at if existing else None),
             auth_mode=next_auth_mode,
             requires_action=bool(requires_action or (existing.requires_action if existing else False)),
             share_token_hash=existing.share_token_hash if existing else None,
+            share_token_expires_at=existing.share_token_expires_at if existing else None,
         )
         self._upsert(artifact)
         return artifact
@@ -156,6 +161,7 @@ class ArtifactStore:
         title: Optional[str] = None,
         description: Optional[str] = None,
         capabilities: Optional[Sequence[str]] = None,
+        tags: Optional[Sequence[str]] = None,
         requires_action: bool = False,
         pinned: bool = False,
         public: bool = False,
@@ -171,6 +177,7 @@ class ArtifactStore:
             description=description,
             password=password,
             capabilities=capabilities,
+            tags=tags,
             pinned=pinned,
             auth_mode=auth_mode,
             requires_action=requires_action,
@@ -206,11 +213,13 @@ class ArtifactStore:
                     archived_at=artifact.archived_at,
                     archive_reason=artifact.archive_reason,
                     capabilities=artifact.capabilities,
+                    tags=artifact.tags,
                     pinned=artifact.pinned,
                     expires_at=artifact.expires_at,
                     auth_mode=artifact.auth_mode,
                     requires_action=artifact.requires_action,
                     share_token_hash=artifact.share_token_hash,
+                    share_token_expires_at=artifact.share_token_expires_at,
                 )
             )
             report["updated" if existed else "imported"] += 1
@@ -221,7 +230,7 @@ class ArtifactStore:
         with self._connect() as con:
             rows = con.execute(
                 f"""
-                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash
+                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, tags, pinned, expires_at, auth_mode, requires_action, share_token_hash, share_token_expires_at
                 FROM artifacts
                 {where}
                 ORDER BY updated_at DESC, slug ASC
@@ -238,7 +247,7 @@ class ArtifactStore:
         with self._connect() as con:
             rows = con.execute(
                 """
-                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash
+                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, tags, pinned, expires_at, auth_mode, requires_action, share_token_hash, share_token_expires_at
                 FROM artifacts
                 WHERE (lower(slug) LIKE ? OR lower(title) LIKE ? OR lower(description) LIKE ?)
                 """
@@ -255,7 +264,7 @@ class ArtifactStore:
         with self._connect() as con:
             row = con.execute(
                 """
-                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash
+                SELECT slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, tags, pinned, expires_at, auth_mode, requires_action, share_token_hash, share_token_expires_at
                 FROM artifacts
                 WHERE slug = ?
                 """,
@@ -281,6 +290,7 @@ class ArtifactStore:
         *,
         title: Optional[str] = None,
         description: Optional[str] = None,
+        tags: Optional[Sequence[str]] = None,
         pinned: Optional[bool] = None,
         expires_at: Optional[int] = None,
         clear_expires_at: bool = False,
@@ -291,6 +301,7 @@ class ArtifactStore:
             artifact,
             title=title if title is not None else artifact.title,
             description=description if description is not None else artifact.description,
+            tags=_normalize_tags(tags) if tags is not None else artifact.tags,
             pinned=pinned if pinned is not None else artifact.pinned,
             expires_at=next_expires_at,
             updated_at=int(time.time()),
@@ -310,32 +321,51 @@ class ArtifactStore:
         self._upsert(updated)
         return updated
 
-    def list_workspace_things(self, *, bucket: str = "active") -> list[Artifact]:
+    def list_workspace_things(self, *, bucket: str = "active", tags: Optional[Sequence[str]] = None) -> list[Artifact]:
         bucket = (bucket or "active").lower()
+        required_tags = set(_normalize_tags(tags or ()))
         if bucket == "requires-action":
-            return [artifact for artifact in self.list(status="active") if artifact.requires_action]
+            things = [artifact for artifact in self.list(status="active") if artifact.requires_action]
+            return _filter_artifacts_by_tags(things, required_tags)
         if bucket == "pinned":
-            return [artifact for artifact in self.list(status="active") if artifact.pinned]
+            things = [artifact for artifact in self.list(status="active") if artifact.pinned]
+            return _filter_artifacts_by_tags(things, required_tags)
         if bucket == "recent":
-            return list(self.list(status="active"))
+            return _filter_artifacts_by_tags(list(self.list(status="active")), required_tags)
         if bucket == "archived":
-            return list(self.list(status="archived"))
+            return _filter_artifacts_by_tags(list(self.list(status="archived")), required_tags)
         if bucket in {"active", "all"}:
-            return list(self.list(status=bucket))
+            return _filter_artifacts_by_tags(list(self.list(status=bucket)), required_tags)
         raise ValueError(f"invalid workspace bucket: {bucket}")
 
-    def create_share_override(self, slug: str, *, token: Optional[str] = None) -> str:
+    def tag_facets(self, *, bucket: str = "active") -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for artifact in self.list_workspace_things(bucket=bucket):
+            for tag in artifact.tags:
+                counts[tag] = counts.get(tag, 0) + 1
+        return dict(sorted(counts.items()))
+
+    def create_share_override(self, slug: str, *, token: Optional[str] = None, ttl_seconds: int = 7 * 24 * 60 * 60, now: Optional[int] = None) -> str:
         artifact = self._require(slug)
+        created_at = int(time.time()) if now is None else int(now)
         raw_token = token or secrets.token_urlsafe(24)
-        updated = self._copy_artifact(artifact, updated_at=int(time.time()), share_token_hash=hash_password(raw_token))
+        updated = self._copy_artifact(
+            artifact,
+            updated_at=created_at,
+            share_token_hash=hash_password(raw_token),
+            share_token_expires_at=created_at + int(ttl_seconds),
+        )
         self._upsert(updated)
         return raw_token
 
-    def verify_share_token(self, slug: str, token: Optional[str]) -> bool:
+    def verify_share_token(self, slug: str, token: Optional[str], *, now: Optional[int] = None) -> bool:
         if not token:
             return False
         artifact = self.get(slug)
         if not artifact or not artifact.share_token_hash:
+            return False
+        checked_at = int(time.time()) if now is None else int(now)
+        if artifact.share_token_expires_at is not None and artifact.share_token_expires_at <= checked_at:
             return False
         return verify_password(token, artifact.share_token_hash)
 
@@ -515,11 +545,13 @@ class ArtifactStore:
                     archived_at INTEGER,
                     archive_reason TEXT,
                     capabilities TEXT NOT NULL DEFAULT '[]',
+                    tags TEXT NOT NULL DEFAULT '[]',
                     pinned INTEGER NOT NULL DEFAULT 0,
                     expires_at INTEGER,
                     auth_mode TEXT NOT NULL DEFAULT 'public',
                     requires_action INTEGER NOT NULL DEFAULT 0,
-                    share_token_hash TEXT
+                    share_token_hash TEXT,
+                    share_token_expires_at INTEGER
                 )
                 """
             )
@@ -534,6 +566,8 @@ class ArtifactStore:
                 con.execute("ALTER TABLE artifacts ADD COLUMN archive_reason TEXT")
             if "capabilities" not in columns:
                 con.execute("ALTER TABLE artifacts ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'")
+            if "tags" not in columns:
+                con.execute("ALTER TABLE artifacts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
             if "pinned" not in columns:
                 con.execute("ALTER TABLE artifacts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
             if "expires_at" not in columns:
@@ -544,6 +578,8 @@ class ArtifactStore:
                 con.execute("ALTER TABLE artifacts ADD COLUMN requires_action INTEGER NOT NULL DEFAULT 0")
             if "share_token_hash" not in columns:
                 con.execute("ALTER TABLE artifacts ADD COLUMN share_token_hash TEXT")
+            if "share_token_expires_at" not in columns:
+                con.execute("ALTER TABLE artifacts ADD COLUMN share_token_expires_at INTEGER")
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS settings (
@@ -573,8 +609,8 @@ class ArtifactStore:
         with self._connect() as con:
             con.execute(
                 """
-                INSERT INTO artifacts (slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, pinned, expires_at, auth_mode, requires_action, share_token_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO artifacts (slug, title, description, path, created_at, updated_at, password_hash, status, archived_at, archive_reason, capabilities, tags, pinned, expires_at, auth_mode, requires_action, share_token_hash, share_token_expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slug) DO UPDATE SET
                     title = excluded.title,
                     description = excluded.description,
@@ -585,11 +621,14 @@ class ArtifactStore:
                     archived_at = excluded.archived_at,
                     archive_reason = excluded.archive_reason,
                     capabilities = excluded.capabilities,
+                    tags = excluded.tags,
                     pinned = excluded.pinned,
                     expires_at = excluded.expires_at,
                     auth_mode = excluded.auth_mode,
                     requires_action = excluded.requires_action,
-                    share_token_hash = excluded.share_token_hash
+                    share_token_hash = excluded.share_token_hash,
+                    share_token_expires_at = excluded.share_token_expires_at
+
                 """,
                 (
                     artifact.slug,
@@ -603,14 +642,15 @@ class ArtifactStore:
                     artifact.archived_at,
                     artifact.archive_reason,
                     json.dumps(list(artifact.capabilities)),
+                    json.dumps(list(artifact.tags)),
                     1 if artifact.pinned else 0,
                     artifact.expires_at,
                     artifact.auth_mode,
                     1 if artifact.requires_action else 0,
                     artifact.share_token_hash,
+                    artifact.share_token_expires_at,
                 ),
             )
-
     def _row_to_artifact(self, row: sqlite3.Row) -> Artifact:
         return Artifact(
             slug=row["slug"],
@@ -624,11 +664,13 @@ class ArtifactStore:
             archived_at=row["archived_at"],
             archive_reason=row["archive_reason"],
             capabilities=_decode_capabilities(row["capabilities"]),
+            tags=_decode_tags(row["tags"]),
             pinned=bool(row["pinned"]),
             expires_at=row["expires_at"],
             auth_mode=row["auth_mode"] or "public",
             requires_action=bool(row["requires_action"]),
             share_token_hash=row["share_token_hash"],
+            share_token_expires_at=row["share_token_expires_at"],
         )
 
     def _row_to_action_audit(self, row: sqlite3.Row) -> ActionAudit:
@@ -657,11 +699,13 @@ class ArtifactStore:
             "archived_at": artifact.archived_at,
             "archive_reason": artifact.archive_reason,
             "capabilities": artifact.capabilities,
+            "tags": artifact.tags,
             "pinned": artifact.pinned,
             "expires_at": artifact.expires_at,
             "auth_mode": artifact.auth_mode,
             "requires_action": artifact.requires_action,
             "share_token_hash": artifact.share_token_hash,
+            "share_token_expires_at": artifact.share_token_expires_at,
         }
         values.update(changes)
         return Artifact(**values)
@@ -704,7 +748,34 @@ def _status_and_clause(status: str, include_archived: Optional[bool]) -> str:
     return " AND " + where.removeprefix("WHERE ")
 
 
+def _normalize_tags(values: Sequence[str]) -> tuple[str, ...]:
+    tags: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for part in str(value).split(","):
+            tag = re.sub(r"\s+", " ", part.strip().lower())
+            if not tag or tag in seen:
+                continue
+            seen.add(tag)
+            tags.append(tag)
+    return tuple(tags[:50])
+
+
+def _filter_artifacts_by_tags(artifacts: list[Artifact], required_tags: set[str]) -> list[Artifact]:
+    if not required_tags:
+        return artifacts
+    return [artifact for artifact in artifacts if required_tags.issubset(set(artifact.tags))]
+
+
 def _decode_capabilities(raw: str) -> tuple[str, ...]:
+    return _decode_json_string_list(raw)
+
+
+def _decode_tags(raw: str) -> tuple[str, ...]:
+    return _normalize_tags(_decode_json_string_list(raw))
+
+
+def _decode_json_string_list(raw: str) -> tuple[str, ...]:
     if not raw:
         return ()
     try:

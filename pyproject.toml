@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "artifactd"
 version = "0.1.0"
-description = "Tiny local artifact deploy server with per-artifact password protection and Cloudflare Tunnel support."
+description = "Hermes artifact/workspace runtime for generated agent Things."
 requires-python = ">=3.9"
 dependencies = [
   "fastapi>=0.110",

@@ -4,8 +4,9 @@ import html
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlencode
 
-from fastapi import FastAPI, Form, HTTPException, Request, Response
+from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from .actions import CAPABILITY_REGISTRY, KanbanExecutor, register_action_routes
@@ -31,37 +32,43 @@ def create_app(
     app = FastAPI(title="artifactd")
 
     @app.get("/", response_class=HTMLResponse)
-    def index(request: Request, q: str = "", bucket: str = "active") -> Response:
+    def index(request: Request, q: str = "", bucket: str = "active", tag: list[str] = Query(default=[])) -> Response:
         session_cookie = _workspace_session_cookie(request, secret)
         if store.workspace_password_configured() and not session_cookie:
             return _workspace_password_page(status_code=401)
         csrf_token = _workspace_csrf_token(session_cookie, secret)
+        selected_tags = _selected_tags(tag)
         return HTMLResponse(
             _index_page(
-                _workspace_bucket(store, query=q, bucket=bucket),
+                _workspace_bucket(store, query=q, bucket=bucket, tags=selected_tags),
                 query=q,
-                heading="Hermes Home",
+                heading="Workspace Home",
                 archive=False,
                 bucket=bucket,
                 counts=_workspace_counts(store),
+                tag_facets=store.tag_facets(bucket=_normalized_bucket(bucket)),
+                selected_tags=selected_tags,
                 csrf_token=csrf_token,
                 profile=workspace_profile,
             )
         )
 
     @app.get("/archive", response_class=HTMLResponse)
-    def archive(request: Request, q: str = "") -> Response:
+    def archive(request: Request, q: str = "", tag: list[str] = Query(default=[])) -> Response:
         session_cookie = _workspace_session_cookie(request, secret)
         if store.workspace_password_configured() and not session_cookie:
             return _workspace_password_page(status_code=401)
+        selected_tags = _selected_tags(tag)
         return HTMLResponse(
             _index_page(
-                _workspace_bucket(store, query=q, bucket="archived"),
+                _workspace_bucket(store, query=q, bucket="archived", tags=selected_tags),
                 query=q,
                 heading="Archived things",
                 archive=True,
                 bucket="archived",
                 counts=_workspace_counts(store),
+                tag_facets=store.tag_facets(bucket="archived"),
+                selected_tags=selected_tags,
                 csrf_token=_workspace_csrf_token(session_cookie, secret),
                 profile=workspace_profile,
             )
@@ -71,40 +78,34 @@ def create_app(
     async def workspace_login(password: str = Form(...)) -> Response:
         if not store.verify_workspace_password(password):
             return _workspace_password_page(status_code=401, message="Wrong password")
-        response = RedirectResponse(url="/", status_code=303)
-        response.set_cookie(
-            _workspace_cookie_name(),
-            sign_artifact_cookie("__workspace__", secret),
-            httponly=True,
-            samesite="lax",
-            secure=False,
-            path="/",
-        )
-        return response
+        return _workspace_login_response(secret, "/")
 
     @app.get("/_workspace/things")
-    def workspace_things(request: Request) -> dict[str, object]:
+    def workspace_things(request: Request, q: str = "", tag: list[str] = Query(default=[])) -> dict[str, object]:
         session_cookie = _workspace_session_cookie(request, secret)
         if store.workspace_password_configured() and not session_cookie:
             raise HTTPException(status_code=401, detail="workspace password required")
+        selected_tags = _selected_tags(tag)
         return {
             "buckets": {
-                "active": [_thing_payload(artifact) for artifact in store.list_workspace_things(bucket="active")],
-                "pinned": [_thing_payload(artifact) for artifact in store.list_workspace_things(bucket="pinned")],
-                "recent": [_thing_payload(artifact) for artifact in store.list_workspace_things(bucket="recent")],
-                "requires_action": [_thing_payload(artifact) for artifact in store.list_workspace_things(bucket="requires-action")],
-                "archived": [_thing_payload(artifact) for artifact in store.list_workspace_things(bucket="archived")],
+                "active": [_thing_payload(artifact) for artifact in _workspace_bucket(store, query=q, bucket="active", tags=selected_tags)],
+                "pinned": [_thing_payload(artifact) for artifact in _workspace_bucket(store, query=q, bucket="pinned", tags=selected_tags)],
+                "recent": [_thing_payload(artifact) for artifact in _workspace_bucket(store, query=q, bucket="recent", tags=selected_tags)],
+                "requires_action": [_thing_payload(artifact) for artifact in _workspace_bucket(store, query=q, bucket="requires-action", tags=selected_tags)],
+                "archived": [_thing_payload(artifact) for artifact in _workspace_bucket(store, query=q, bucket="archived", tags=selected_tags)],
             },
             "counts": _workspace_counts(store),
+            "tag_facets": store.tag_facets(bucket="active"),
+            "selected_tags": selected_tags,
         }
 
     @app.get("/_workspace/home")
-    def workspace_home(request: Request) -> dict[str, object]:
+    def workspace_home(request: Request, q: str = "", tag: list[str] = Query(default=[])) -> dict[str, object]:
         session_cookie = _workspace_session_cookie(request, secret)
         if store.workspace_password_configured() and not session_cookie:
             raise HTTPException(status_code=401, detail="workspace password required")
         csrf_token = _workspace_csrf_token(session_cookie, secret)
-        return _workspace_home_payload(store, profile=workspace_profile, executor=executor, csrf_token=csrf_token)
+        return _workspace_home_payload(store, profile=workspace_profile, executor=executor, csrf_token=csrf_token, query=q, tags=_selected_tags(tag))
 
     @app.post("/_workspace/things/{slug}/pin")
     async def workspace_pin(slug: str, request: Request, pinned: str = Form("true"), csrf_token: str = Form("")) -> Response:
@@ -123,7 +124,7 @@ def create_app(
     @app.post("/_workspace/things/{slug}/archive")
     async def workspace_archive(slug: str, request: Request, csrf_token: str = Form("")) -> Response:
         _require_workspace_mutation_session(store, request, secret, csrf_token)
-        artifact = store.archive(slug, reason="Archived from Hermes Home", force=True)
+        artifact = store.archive(slug, reason="Archived from Workspace Home", force=True)
         store.record_action_audit(
             slug=artifact.slug,
             capability="workspace.archive",
@@ -170,19 +171,10 @@ def create_app(
         artifact = store.get(slug)
         if not artifact:
             raise HTTPException(status_code=404, detail="artifact not found")
+        if store.workspace_password_configured() and store.verify_workspace_password(password):
+            return _workspace_login_response(secret, f"/{artifact.slug}")
         if artifact.uses_profile_auth:
-            if not store.verify_workspace_password(password):
-                return _password_page(artifact, status_code=401, message="Wrong password")
-            response = RedirectResponse(url=f"/{artifact.slug}", status_code=303)
-            response.set_cookie(
-                _workspace_cookie_name(),
-                sign_artifact_cookie("__workspace__", secret),
-                httponly=True,
-                samesite="lax",
-                secure=False,
-                path="/",
-            )
-            return response
+            return _password_page(artifact, status_code=401, message="Wrong password")
         if not artifact.password_hash or not verify_password(password, artifact.password_hash):
             return _password_page(artifact, status_code=401, message="Wrong password")
         response = RedirectResponse(url=f"/{artifact.slug}", status_code=303)
@@ -218,6 +210,8 @@ def _index_page(
     archive: bool = False,
     bucket: str = "active",
     counts: Optional[dict[str, int]] = None,
+    tag_facets: Optional[dict[str, int]] = None,
+    selected_tags: Optional[list[str]] = None,
     csrf_token: str = "",
     profile: str = "default",
 ) -> str:
@@ -226,6 +220,8 @@ def _index_page(
     escaped_bucket = html.escape(bucket, quote=True)
     escaped_profile = html.escape(profile)
     counts = counts or {}
+    tag_facets = tag_facets or {}
+    selected_tags = selected_tags or []
     cards = []
     for artifact in artifacts:
         slug = html.escape(artifact.slug)
@@ -243,10 +239,11 @@ def _index_page(
         if artifact.expires_at is not None:
             meta.append(f"expires_at={artifact.expires_at}")
         if artifact.capabilities:
-            meta.append("actions=" + ",".join(artifact.capabilities))
+            meta.append(f"Actions: {len(artifact.capabilities)}")
         if artifact.archive_reason:
             meta.append("reason=" + artifact.archive_reason)
         meta_html = f"<p class=\"meta\">{html.escape(' · '.join(meta))}</p>" if meta else ""
+        tag_html = _tag_chip_html(artifact.tags)
         workspace_actions = _workspace_action_forms(artifact, csrf_token)
         cards.append(
             f"""
@@ -258,6 +255,7 @@ def _index_page(
               <h2><a href="/{slug}">{title}</a></h2>
               <p>{description}</p>
               {meta_html}
+              {tag_html}
               <p class="actions"><a href="/{slug}">Open</a> · <a href="/{slug}/_actions">Update</a></p>
               {workspace_actions}
               <code>/{slug}</code>
@@ -276,7 +274,7 @@ def _index_page(
     lede = (
         "Archived artifacts are hidden from the home page but remain recoverable until pruned."
         if archive
-        else "One Hermes Home for generated Things. Open, Share, Update, Pin, and Archive active work; profile-auth protected Things share one workspace session by default."
+        else "One workspace for generated Things. Open, Share, Update, Pin, and Archive active work; profile-auth protected Things share one workspace session by default."
     )
     bucket_links = ""
     if not archive:
@@ -290,6 +288,13 @@ def _index_page(
             f'<a class="{html.escape("selected" if name == bucket else "")}" href="/?bucket={html.escape(name, quote=True)}">{html.escape(label)} <span>{counts.get(name, 0)}</span></a>'
             for name, label in bucket_items
         ) + "</div>"
+    tag_filters = _tag_filter_html(
+        tag_facets,
+        selected_tags=selected_tags,
+        query=query,
+        bucket=bucket,
+        archive=archive,
+    )
     return f"""
     <!doctype html>
     <html lang="en">
@@ -314,8 +319,12 @@ def _index_page(
           .buckets a {{ border: 1px solid var(--line); border-radius: 999px; padding: 10px 14px; color: var(--text); text-decoration: none; }}
           .buckets a.selected {{ background: rgba(139,92,246,.28); border-color: rgba(196,181,253,.6); }}
           .buckets span {{ color: #c4b5fd; font-weight: 800; }}
+          .tag-filters, .tags {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+          .tag-chip {{ display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 999px; padding: 5px 9px; color: #dbeafe; background: rgba(59,130,246,.12); font-size: .82rem; text-decoration: none; }}
+          .tag-chip.selected {{ border-color: rgba(196,181,253,.75); background: rgba(139,92,246,.35); }}
+          .tag-chip span {{ color: #c4b5fd; font-weight: 800; }}
           .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }}
-          .card {{ border: 1px solid var(--line); border-radius: 24px; padding: 22px; background: var(--panel); box-shadow: 0 20px 70px rgba(0,0,0,.22); }}
+          .card {{ border: 1px solid var(--line); border-radius: 24px; padding: 22px; background: var(--panel); box-shadow: 0 20px 70px rgba(0,0,0,.22); overflow: hidden; overflow-wrap: anywhere; }}
           .card-top {{ display: flex; justify-content: space-between; align-items: center; gap: 12px; }}
           .eyebrow {{ margin: 0; color: var(--muted); text-transform: uppercase; letter-spacing: .12em; font-size: .72rem; font-weight: 800; }}
           h2 {{ margin: 18px 0 10px; font-size: 1.35rem; letter-spacing: -.03em; }}
@@ -340,8 +349,10 @@ def _index_page(
             <p class="lede">{html.escape(lede)}</p>
             <nav><a href="{nav_href}">{nav_label}</a></nav>
             {bucket_links}
+            {tag_filters}
             <form class="search" method="get" action="{'/archive' if archive else '/'}" role="search">
               <input type="hidden" name="bucket" value="{escaped_bucket}">
+              {''.join(f'<input type="hidden" name="tag" value="{html.escape(tag, quote=True)}">' for tag in selected_tags)}
               <input type="search" name="q" value="{escaped_query}" placeholder="Search things" aria-label="Search things">
               <button type="submit">Search things</button>
             </form>
@@ -374,11 +385,61 @@ def _workspace_action_forms(artifact: Artifact, csrf_token: str) -> str:
     """
 
 
-def _workspace_bucket(store: ArtifactStore, *, query: str = "", bucket: str = "active") -> list[Artifact]:
+def _tag_chip_html(tags: tuple[str, ...]) -> str:
+    if not tags:
+        return ""
+    chips = "".join(f'<span class="tag-chip">{html.escape(tag)}</span>' for tag in tags)
+    return f'<div class="tags" aria-label="Thing tags">{chips}</div>'
+
+
+def _tag_filter_html(tag_facets: dict[str, int], *, selected_tags: list[str], query: str, bucket: str, archive: bool) -> str:
+    if not tag_facets:
+        return ""
+    selected = set(selected_tags)
+    chips = []
+    for tag, count in tag_facets.items():
+        next_tags = [item for item in selected_tags if item != tag] if tag in selected else [*selected_tags, tag]
+        css = "tag-chip selected" if tag in selected else "tag-chip"
+        chips.append(
+            f'<a class="{css}" data-tag-filter href="{html.escape(_tag_filter_href(query=query, bucket=bucket, tags=next_tags, archive=archive), quote=True)}">'
+            f'{html.escape(tag)} <span>{count}</span></a>'
+        )
+    return '<div class="tag-filters" aria-label="Filter by tag">' + "".join(chips) + "</div>"
+
+
+def _tag_filter_href(*, query: str, bucket: str, tags: list[str], archive: bool) -> str:
+    path = "/archive" if archive else "/"
+    params: list[tuple[str, str]] = []
+    if query.strip():
+        params.append(("q", query.strip()))
+    if not archive:
+        params.append(("bucket", _normalized_bucket(bucket)))
+    for tag in tags:
+        params.append(("tag", tag))
+    return path + ("?" + urlencode(params) if params else "")
+
+
+def _selected_tags(values: list[str]) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for part in str(value).split(","):
+            tag = " ".join(part.strip().lower().split())
+            if not tag or tag in seen:
+                continue
+            seen.add(tag)
+            selected.append(tag)
+    return selected
+
+
+def _normalized_bucket(bucket: str) -> str:
     normalized = (bucket or "active").lower()
-    if normalized not in {"active", "pinned", "recent", "requires-action", "archived"}:
-        normalized = "active"
-    things = store.list_workspace_things(bucket=normalized)
+    return normalized if normalized in {"active", "pinned", "recent", "requires-action", "archived"} else "active"
+
+
+def _workspace_bucket(store: ArtifactStore, *, query: str = "", bucket: str = "active", tags: Optional[list[str]] = None) -> list[Artifact]:
+    normalized = _normalized_bucket(bucket)
+    things = store.list_workspace_things(bucket=normalized, tags=tags or [])
     needle = query.strip().lower()
     if not needle:
         return things
@@ -406,23 +467,27 @@ def _thing_payload(artifact: Artifact) -> dict[str, object]:
         "pinned": artifact.pinned,
         "requires_action": artifact.requires_action,
         "capabilities": list(artifact.capabilities),
+        "tags": list(artifact.tags),
         "updated_at": artifact.updated_at,
         "path": f"/{artifact.slug}",
     }
 
 
-def _workspace_home_payload(store: ArtifactStore, *, profile: str, executor: KanbanExecutor, csrf_token: str) -> dict[str, object]:
+def _workspace_home_payload(store: ArtifactStore, *, profile: str, executor: KanbanExecutor, csrf_token: str, query: str = "", tags: Optional[list[str]] = None) -> dict[str, object]:
     bucket_names = ["active", "pinned", "recent", "requires-action", "archived"]
+    selected_tags = tags or []
     return {
         "kind": "HermesWorkspaceHome",
-        "title": "Hermes Home",
+        "title": "Workspace Home",
         "profile": profile,
         "language": {"home": "Home", "thing": "Thing", "things": "Things"},
         "counts": _workspace_counts(store),
+        "tag_facets": store.tag_facets(bucket="active"),
+        "selected_tags": selected_tags,
         "buckets": {
             _payload_bucket_key(bucket): [
                 _workspace_home_thing_payload(artifact, profile=profile, executor=executor, csrf_token=csrf_token)
-                for artifact in store.list_workspace_things(bucket=bucket)
+                for artifact in _workspace_bucket(store, query=query, bucket=bucket, tags=selected_tags)
             ]
             for bucket in bucket_names
         },
@@ -487,6 +552,19 @@ def _workspace_session_cookie(request: Request, secret: str) -> Optional[str]:
     return None
 
 
+def _workspace_login_response(secret: str, redirect_url: str) -> RedirectResponse:
+    response = RedirectResponse(url=redirect_url, status_code=303)
+    response.set_cookie(
+        _workspace_cookie_name(),
+        sign_artifact_cookie("__workspace__", secret),
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
+    return response
+
+
 def _workspace_csrf_token(session_cookie: Optional[str], secret: str) -> str:
     if not session_cookie:
         return ""
@@ -516,9 +594,10 @@ def _share_page(artifact: Artifact, token: str) -> HTMLResponse:
     <html lang="en">
       <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Share · {escaped_title}</title></head>
       <body style="font-family: system-ui, sans-serif; max-width: 42rem; margin: 12vh auto; padding: 0 1rem;">
-        <p><a href="/">← Hermes Home</a></p>
+        <p><a href="/">← Workspace Home</a></p>
         <h1>Share link created</h1>
         <p>This token unlocks only <strong>{escaped_title}</strong>; the profile workspace password stays private.</p>
+        <p><strong>Expires in 7 days.</strong></p>
         <p><input value="{escaped_path}" readonly style="width:100%;padding:.75rem;font:inherit;"></p>
         <p><a href="{escaped_path}">Open share link</a></p>
       </body>
@@ -537,7 +616,7 @@ def _serve_artifact(store: ArtifactStore, slug: str, relative_path: str, request
             return _password_page(artifact, status_code=401)
     elif artifact.password_hash:
         cookie = request.cookies.get(_cookie_name(artifact.slug))
-        if not verify_artifact_cookie(artifact.slug, cookie, secret):
+        if not _has_workspace_session(request, secret) and not verify_artifact_cookie(artifact.slug, cookie, secret):
             return _password_page(artifact, status_code=401)
     try:
         file_path = store.resolve_file(artifact, relative_path)
@@ -551,6 +630,7 @@ def _serve_artifact(store: ArtifactStore, slug: str, relative_path: str, request
 def _password_page(artifact: Artifact, *, status_code: int = 401, message: str = "Password required") -> HTMLResponse:
     escaped_slug = html.escape(artifact.slug)
     escaped_message = html.escape(message)
+    auto_unlock = "false" if message == "Wrong password" else "true"
     body = f"""
     <!doctype html>
     <html lang="en">
@@ -568,10 +648,20 @@ def _password_page(artifact: Artifact, *, status_code: int = 401, message: str =
       <body>
         <h1>{escaped_message}</h1>
         <p>This artifact is protected.</p>
-        <form method="post" action="/{escaped_slug}/login">
+        <form method="post" action="/{escaped_slug}/login" data-master-password-form data-auto-unlock="{auto_unlock}">
           <input type="password" name="password" autocomplete="current-password" autofocus>
           <button type="submit">Unlock</button>
         </form>
+        <script>
+          (() => {{
+            const key = 'artifactd.masterPassword';
+            const form = document.querySelector('[data-master-password-form]');
+            const input = form?.querySelector('input[name="password"]');
+            const saved = window.localStorage?.getItem(key);
+            if (saved && input) {{ input.value = saved; if (form?.dataset.autoUnlock === 'true') form.submit(); }}
+            form?.addEventListener('submit', () => {{ if (input?.value) window.localStorage?.setItem(key, input.value); }});
+          }})();
+        </script>
       </body>
     </html>
     """
@@ -593,17 +683,28 @@ def _has_workspace_session(request: Request, secret: str) -> bool:
 
 def _workspace_password_page(*, status_code: int = 401, message: str = "Workspace password required") -> HTMLResponse:
     escaped_message = html.escape(message)
+    auto_unlock = "false" if message == "Wrong password" else "true"
     body = f"""
     <!doctype html>
     <html lang="en">
-      <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Hermes Home login</title></head>
+      <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Workspace Home login</title></head>
       <body style="font-family: system-ui, sans-serif; max-width: 34rem; margin: 12vh auto; padding: 0 1rem;">
         <h1>{escaped_message}</h1>
         <p>One profile session unlocks protected generated Things in this Hermes workspace.</p>
-        <form method="post" action="/_workspace/login" style="display:flex;gap:.5rem;">
+        <form method="post" action="/_workspace/login" data-master-password-form data-auto-unlock="{auto_unlock}" style="display:flex;gap:.5rem;">
           <input type="password" name="password" autocomplete="current-password" autofocus style="flex:1;padding:.65rem .8rem;">
           <button type="submit" style="padding:.65rem .8rem;">Unlock</button>
         </form>
+        <script>
+          (() => {{
+            const key = 'artifactd.masterPassword';
+            const form = document.querySelector('[data-master-password-form]');
+            const input = form?.querySelector('input[name="password"]');
+            const saved = window.localStorage?.getItem(key);
+            if (saved && input) {{ input.value = saved; if (form?.dataset.autoUnlock === 'true') form.submit(); }}
+            form?.addEventListener('submit', () => {{ if (input?.value) window.localStorage?.setItem(key, input.value); }});
+          }})();
+        </script>
       </body>
     </html>
     """

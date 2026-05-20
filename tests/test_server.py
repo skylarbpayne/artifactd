@@ -62,7 +62,7 @@ def test_homepage_lists_artifacts_with_descriptions_and_search(tmp_path: Path):
     website = tmp_path / "website.html"
     website.write_text("<h1>Website</h1>", encoding="utf-8")
     store = ArtifactStore(tmp_path / "home")
-    store.deploy(deck, slug="spring-gala-deck", title="Spring Gala Deck", description="Sponsor presentation storyboard")
+    store.deploy(deck, slug="spring-gala-deck", title="Spring Gala Deck", description="Sponsor presentation storyboard", capabilities=["artifact.describe"])
     store.deploy(website, slug="website-preview", title="Website Preview", description="Agora homepage copy review")
     client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
 
@@ -71,6 +71,9 @@ def test_homepage_lists_artifacts_with_descriptions_and_search(tmp_path: Path):
 
     assert home.status_code == 200
     assert "Search things" in home.text
+    assert "actions=" not in home.text
+    assert "Actions: 1" in home.text
+    assert "overflow-wrap: anywhere" in home.text
     assert "Spring Gala Deck" in home.text
     assert "Sponsor presentation storyboard" in home.text
     assert "Website Preview" in home.text
