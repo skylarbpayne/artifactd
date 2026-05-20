@@ -10,6 +10,7 @@ import typer
 from .server import create_app
 from .store import ArtifactStore
 from .workspaces import resolve_workspace_home
+from .hermes_plugin_installer import install_hermes_plugin
 
 app = typer.Typer(help="Deploy and serve tiny static HTML artifacts.")
 workspaces_app = typer.Typer(help="Install, inspect, and smoke-test Hermes Workspaces for a profile.")
@@ -101,6 +102,66 @@ def workspaces_smoke(
     typer.echo(f"created {thing.slug}")
     typer.echo(f"auth_mode={thing.auth_mode}")
     typer.echo("status=ok")
+
+
+@workspaces_app.command("register")
+def workspaces_register(
+    source: Path = typer.Argument(..., exists=True, help="HTML file or directory containing index.html."),
+    profile: str = typer.Option(..., "--profile", help="Hermes profile name."),
+    hermes_root: Optional[Path] = typer.Option(None, "--hermes-root", help="Root Hermes home containing profiles/<name>."),
+    profile_home: Optional[Path] = typer.Option(None, "--profile-home", help="Explicit profile-scoped HERMES_HOME."),
+    slug: str = typer.Option(..., "--slug", help="Workspace Thing slug."),
+    title: Optional[str] = typer.Option(None, "--title", help="Display title."),
+    description: Optional[str] = typer.Option(None, "--description", help="Short searchable description."),
+    capability: Optional[List[str]] = typer.Option(None, "--capability", help="Allowed named server-side capability. Repeat for multiple."),
+    requires_action: bool = typer.Option(False, "--requires-action", help="Surface this Thing in the requires-action bucket."),
+    pinned: bool = typer.Option(False, "--pinned", help="Pin this Thing in Home."),
+    public: bool = typer.Option(False, "--public", help="Make public instead of profile-auth protected."),
+    password: Optional[str] = typer.Option(None, "--password", help="Use custom password auth instead of profile auth."),
+):
+    workspace_home = resolve_workspace_home(profile, hermes_root=hermes_root, profile_home=profile_home)
+    thing = ArtifactStore(workspace_home).register_thing(
+        source,
+        slug=slug,
+        title=title,
+        description=description,
+        capabilities=capability,
+        requires_action=requires_action,
+        pinned=pinned,
+        public=public,
+        password=password,
+    )
+    typer.echo(f"profile={profile}")
+    typer.echo(f"workspace_home={workspace_home}")
+    typer.echo(f"registered {thing.slug}")
+    typer.echo(f"auth_mode={thing.auth_mode}")
+
+
+@workspaces_app.command("install-plugin")
+def workspaces_install_plugin(
+    profile: str = typer.Option(..., "--profile", help="Hermes profile name."),
+    hermes_root: Optional[Path] = typer.Option(None, "--hermes-root", help="Root Hermes home containing profiles/<name>."),
+    profile_home: Optional[Path] = typer.Option(None, "--profile-home", help="Explicit profile-scoped HERMES_HOME."),
+    runtime_path: Optional[Path] = typer.Option(None, "--runtime-path", help="artifactd executable the Hermes plugin should call."),
+    port: int = _port_option,
+    public_base_url: Optional[str] = _public_base_option,
+    enable: bool = typer.Option(False, "--enable", help="Add artifactd_workspaces to plugins.enabled in profile config.yaml."),
+    force: bool = typer.Option(False, "--force", help="Replace an existing generated artifactd_workspaces plugin directory."),
+):
+    plugin_dir = install_hermes_plugin(
+        profile=profile,
+        hermes_root=hermes_root,
+        profile_home=profile_home,
+        runtime_path=runtime_path,
+        port=port,
+        public_base_url=_normalize_base_url(public_base_url),
+        enable=enable,
+        force=force,
+    )
+    typer.echo(f"profile={profile}")
+    typer.echo(f"plugin_dir={plugin_dir}")
+    typer.echo(f"installed_plugin=true")
+    typer.echo(f"enabled={str(enable).lower()}")
 
 
 @app.command()

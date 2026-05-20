@@ -75,9 +75,9 @@ ARTIFACTD_HOME=/path/to/artifacts artifactd list
 artifactd --home /path/to/artifacts list
 ```
 
-## Hermes Workspaces seed
+## Hermes Workspaces plugin
 
-Workspaces are the profile-scoped path toward “one Hermes Home for things the agent made.” This is still an `artifactd` seed, not the final Hermes plugin/dashboard integration, but it is cloneable and smoke-testable.
+Workspaces are the profile-scoped path toward “one Hermes Home for things the agent made.” The generated Things are HTML/JS/CSS surfaces; the installable integration is this `artifactd` sidecar/plugin package. It is cloneable, smoke-testable, and installable into a Hermes profile without patching Hermes core.
 
 ```bash
 # From a clone or this checkout
@@ -91,6 +91,14 @@ TMPDIR=$(mktemp -d)
 artifactd workspaces smoke --profile echo --hermes-root "$TMPDIR/.hermes" --password "dev-only"
 artifactd workspaces status --profile echo --hermes-root "$TMPDIR/.hermes"
 artifactd workspaces start --profile echo --hermes-root "$TMPDIR/.hermes" --port 8788
+
+# Install the profile-local Hermes plugin wrapper from this package
+artifactd workspaces install-plugin \
+  --profile echo \
+  --hermes-root "$TMPDIR/.hermes" \
+  --runtime-path "$(command -v artifactd)" \
+  --port 8788 \
+  --enable
 ```
 
 The default profile layout is:
@@ -107,6 +115,13 @@ Useful commands:
 ```bash
 artifactd workspaces install --profile palmer --password "<store outside git>"
 artifactd workspaces status --profile palmer
+artifactd workspaces register ./dist/daily.html --profile palmer --slug daily --title "Daily"
+artifactd workspaces install-plugin \
+  --profile palmer \
+  --runtime-path /Users/skylarpayne/artifactd/.venv/bin/artifactd \
+  --port 8787 \
+  --public-base-url https://artifacts.skylarbpayne.com \
+  --enable
 artifactd workspaces start --profile palmer --port 8787
 artifactd --home ~/.hermes/profiles/palmer/workspaces serve --profile palmer --port 8787
 ```
@@ -116,13 +131,16 @@ Current Workspaces behavior:
 - profile names are validated before paths are derived;
 - `--hermes-root <root>` maps to `<root>/profiles/<profile>`;
 - generated Things default to profile/workspace auth;
+- `artifactd workspaces register` turns existing HTML files/directories into profile-auth Things;
+- `artifactd workspaces install-plugin` writes a profile-local Hermes plugin wrapper under `$HERMES_HOME/plugins/artifactd_workspaces` and can enable it via `plugins.enabled`;
+- the package also exposes a `hermes_agent.plugins` entry point named `artifactd_workspaces` for pip-installed Hermes plugin discovery;
 - one workspace session can unlock profile-auth Things;
 - single-Thing share override tokens are available for explicit sharing;
 - legacy custom-password artifacts remain compatible;
 - Home exposes Open, Share, Update, Pin, Requires action, and Archive controls;
 - `GET /_workspace/things` returns dashboard-friendly buckets/counts.
 
-Next integration layer is still TODO: wrap this as Hermes profile commands/dashboard/plugin plumbing so users can run `hermes -p <profile> workspaces ...` instead of calling `artifactd` directly.
+This is the correct plugin-first path: `artifactd` is the separately installable sidecar/plugin package, generated Things are not Hermes plugins, and Hermes core is not modified for Workspaces.
 
 ## Cloudflare Tunnel
 
