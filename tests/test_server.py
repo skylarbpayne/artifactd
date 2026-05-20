@@ -387,6 +387,7 @@ def test_audio_library_lists_searches_updates_and_downloads_notes(tmp_path: Path
     assert payload["follow_up_needed"] is True
     assert payload["has_edits"] is True
     assert "Confirm room" in payload["effective_notes"]
+    assert payload["transcript"] == "Maria mentioned donor outreach."
     assert Path(payload["edited_meeting_notes_path"]).exists()
     assert filtered.json()["total_matches"] == 1
     assert download.status_code == 200

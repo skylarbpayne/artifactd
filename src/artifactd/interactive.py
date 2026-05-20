@@ -421,14 +421,15 @@ def _audio_effective_notes(metadata: Dict[str, object]) -> str:
     return str(metadata.get("edited_meeting_notes") or metadata.get("meeting_notes") or "")
 
 
-def _audio_transcript_excerpt(metadata: Dict[str, object], *, limit: int = 2000) -> str:
+def _audio_transcript_excerpt(metadata: Dict[str, object], *, limit: Optional[int] = 2000) -> str:
     transcript_path = metadata.get("transcript_path")
     if not transcript_path:
         return ""
     path = Path(str(transcript_path))
     try:
         if path.exists() and path.is_file():
-            return path.read_text(encoding="utf-8", errors="replace")[:limit]
+            transcript = path.read_text(encoding="utf-8", errors="replace")
+            return transcript if limit is None else transcript[:limit]
     except Exception:
         return ""
     return ""
@@ -515,6 +516,7 @@ def _audio_meeting_payload(upload_id: str) -> Dict[str, object]:
     payload["effective_notes"] = effective_notes
     payload["has_edits"] = bool(payload.get("edited_meeting_notes"))
     payload["transcript_excerpt"] = _audio_transcript_excerpt(payload, limit=2500)
+    payload["transcript"] = _audio_transcript_excerpt(payload, limit=None)
     return payload
 
 
