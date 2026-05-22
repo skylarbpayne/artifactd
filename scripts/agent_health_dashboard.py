@@ -95,6 +95,72 @@ def parse_json(text: str) -> Any | None:
         return None
 
 
+def _redact_process_args(args: list[str]) -> list[str]:
+    """Keep process samples useful without leaking tokens or huge prompts."""
+    scrubbed: list[str] = []
+    skip_next = False
+    secret_flags = {"--secret", "--secret-token", "--token", "--api-key", "--password", "--auth"}
+    for part in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if part in secret_flags:
+            skip_next = True
+            continue
+        if any(part.startswith(flag + "=") for flag in secret_flags):
+            continue
+        if re.search(r"(?i)(token|secret|password|api[_-]?key)=", part):
+            scrubbed.append("[REDACTED]")
+            continue
+        scrubbed.append(part)
+    return scrubbed[:5]
+
+
+def process_inventory(ps_output: str) -> dict[str, Any]:
+    """Summarize local runtime processes for the ops console."""
+    categories = {"artifactd": [], "cloudflared": [], "hermes": [], "codex": [], "other": []}
+    for raw in ps_output.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 2 or not parts[0].isdigit():
+            continue
+        pid, comm = parts[0], pathlib.Path(parts[1]).name
+        args = parts[2:]
+        haystack = " ".join([comm, *args]).lower()
+        if "artifactd" in haystack:
+            category = "artifactd"
+        elif "cloudflared" in haystack:
+            category = "cloudflared"
+        elif "hermes" in haystack:
+            category = "hermes"
+        elif re.search(r"(^|/)codex(\s|$)", haystack) or comm == "codex":
+            category = "codex"
+        else:
+            category = "other"
+        sample_args = _redact_process_args(args)
+        if sample_args and pathlib.Path(sample_args[0]).name == comm:
+            sample_args = sample_args[1:]
+        categories[category].append(" ".join([pid, comm, *sample_args]).strip())
+    counts = {key: len(value) for key, value in categories.items()}
+    return {
+        "counts": counts,
+        "total_tracked": counts["artifactd"] + counts["cloudflared"] + counts["hermes"] + counts["codex"],
+        "samples": {key: value[:6] for key, value in categories.items() if value},
+    }
+
+
+def codex_auth_summary(home: pathlib.Path) -> dict[str, str]:
+    """Report Codex auth presence without reading or exposing token contents."""
+    auth_file = home / ".codex" / "auth.json"
+    if auth_file.exists() and auth_file.stat().st_size > 0:
+        return {"status": "ok", "evidence": "Codex auth file exists and is non-empty"}
+    if auth_file.exists():
+        return {"status": "warn", "evidence": "Codex auth file exists but is empty"}
+    return {"status": "warn", "evidence": f"Codex auth file missing at {auth_file}"}
+
+
 def add_check(checks: list[Check], **kwargs: Any) -> None:
     checks.append(Check(**kwargs))
 
@@ -333,6 +399,44 @@ def check_kanban_artifactd(checks: list[Check]) -> None:
     add_check(checks, id="artifactd-public", agent="Palmer", app="artifactd", account="artifacts.skylarbpayne.com", operation="HTTPS smoke-live", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
 
 
+def check_runtime_ops(checks: list[Check]) -> None:
+    rc, out, err, secs = run(["ps", "-axo", "pid=,comm=,args="], os.environ.copy(), 20)
+    if rc == 0:
+        inventory = process_inventory(out)
+        counts = inventory["counts"]
+        status = "ok" if inventory["total_tracked"] else "warn"
+        summary = "Agent runtime processes visible" if inventory["total_tracked"] else "No tracked agent runtime processes found"
+        evidence = "; ".join(f"{k}={v}" for k, v in counts.items())
+        if inventory.get("samples"):
+            evidence += " | samples: " + redact(json.dumps(inventory["samples"]), 520)
+        remediation = "" if inventory["total_tracked"] else "Check LaunchDaemons/gateway processes before assuming agents are running."
+    else:
+        status = "fail"
+        summary = "Process inventory failed"
+        evidence = redact(err or out, 360)
+        remediation = "Run ps manually on the Mac mini and check launchd/service ownership."
+    add_check(checks, id="runtime-processes", agent="Palmer host", app="Runtime processes", account="local machine", operation="ps inventory", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
+
+
+def check_codex_auth(checks: list[Check]) -> None:
+    start = time.time()
+    summary_data = codex_auth_summary(pathlib.Path("/Users/skylarpayne"))
+    remediation = "" if summary_data["status"] == "ok" else "Run Codex login/auth repair from Skylar's real HOME before assigning Codex-backed coding work."
+    add_check(
+        checks,
+        id="codex-auth",
+        agent="Palmer host",
+        app="Codex",
+        account="Skylar real HOME",
+        operation="auth file presence",
+        status=summary_data["status"],
+        summary="Codex auth available" if summary_data["status"] == "ok" else "Codex auth needs attention",
+        evidence=summary_data["evidence"],
+        remediation=remediation,
+        seconds=time.time() - start,
+    )
+
+
 def collect_checks() -> list[Check]:
     checks: list[Check] = []
     palmer_env = load_profile_env(PALMER_PROFILE)
@@ -362,6 +466,8 @@ def collect_checks() -> list[Check]:
     check_canva(checks, echo_env)
     check_github(checks)
     check_kanban_artifactd(checks)
+    check_runtime_ops(checks)
+    check_codex_auth(checks)
     return checks
 
 
@@ -435,7 +541,7 @@ def render_html(checks: list[Check], generated_at: str) -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Palmer / Echo Health</title>
+  <title>Palmer / Echo Ops Console</title>
   <style>
     :root {{
       color-scheme: dark;
@@ -486,11 +592,11 @@ def render_html(checks: list[Check], generated_at: str) -> str:
 <body>
   <header>
     <div class="topline">{badge(summary['overall'])}<span class="muted">Generated {esc(generated_at)}</span><span class="muted">Protected artifact: /{ARTIFACT_SLUG}</span></div>
-    <h1>Palmer / Echo<br/>connectivity health</h1>
+    <h1>Palmer / Echo<br/>ops console</h1>
     <div class="hero">
       <section class="panel">
         <div class="status-big">{status_dot(summary['overall'])}{esc(summary['label'])}</div>
-        <p>This is the boring dashboard we actually need: live smoke tests by profile, app, and account. The goal is to avoid the dumb failure mode where one Gmail token expires and we nuke every integration from orbit.</p>
+        <p>This is the boring ops console we actually need: live smoke tests by profile, app, account, runtime process, and Codex auth surface. The goal is to avoid the dumb failure mode where one Gmail token expires and we nuke every integration from orbit.</p>
         <div class="counts">
           <div class="count"><b>{summary['counts'].get('ok', 0)}</b><span>ok</span></div>
           <div class="count"><b>{summary['counts'].get('warn', 0)}</b><span>warn</span></div>
@@ -531,7 +637,7 @@ def render_html(checks: list[Check], generated_at: str) -> str:
         <pre>cd /Users/skylarpayne/artifactd
 . .venv/bin/activate
 python scripts/agent_health_dashboard.py --out dist/agent-health
-artifactd --home /Users/skylarpayne/.hermes/artifacts --public-base-url https://artifacts.skylarbpayne.com deploy dist/agent-health --slug agent-health --title "Palmer / Echo connectivity health" --description "Protected dashboard with live smoke-test status for Palmer and Echo app connectivity, especially Google/email auth." --pinned</pre>
+artifactd --home /Users/skylarpayne/.hermes/artifacts --public-base-url https://artifacts.skylarbpayne.com deploy dist/agent-health --slug agent-health --title "Palmer / Echo ops console" --description "Protected dashboard with live smoke-test status for Palmer and Echo app connectivity, runtime processes, and Codex auth." --pinned</pre>
       </article>
     </section>
 
