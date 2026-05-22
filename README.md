@@ -160,7 +160,7 @@ curl -o /dev/null -s -w '%{http_code}\n' https://<artifact-host>/<known-public-s
 curl -o /dev/null -s -w '%{http_code}\n' https://<artifact-host>/<known-protected-slug>
 ```
 
-Expected results for a password-protected workspace are: `/` returns `401` before login, public Things return `200`, protected Things return `401` before login. Browser-login to Workspace Home should show per-card **Share link** controls; creating one should produce a full `https://.../<slug>?share=...` URL with a 7-day expiry.
+Expected results for a password-protected workspace are: `/` returns `401` before login, public Things return `200`, protected Things return `401` before login. Browser-login to Workspace Home should show per-card **Share link** controls; authenticated HTML artifact pages should show the floating **Share link** toolbar; creating one should produce a full `https://.../<slug>?share=...` URL with a 7-day expiry. The toolbar must not appear for unauthenticated visitors or `?share=` recipients.
 
 For agents/people consuming this repo, the handoff rule is: if a change matters to other consumers, commit it, push it to `origin/main`, and include these update/restart/verify steps in the handoff. Local-only fixes do not count as shipped.
 
