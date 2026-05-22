@@ -24,11 +24,13 @@ def create_app(
     cookie_secret: Optional[str] = None,
     kanban_executor: Optional[KanbanExecutor] = None,
     profile: Optional[str] = None,
+    public_base_url: Optional[str] = None,
 ) -> FastAPI:
     store = ArtifactStore(Path(home))
     secret = cookie_secret or DEFAULT_COOKIE_SECRET
     executor = kanban_executor or KanbanExecutor(profile=profile)
     workspace_profile = profile or getattr(executor, "profile", "default")
+    public_base_url = (public_base_url or os.environ.get("ARTIFACTD_PUBLIC_BASE_URL") or "").rstrip("/") or None
     app = FastAPI(title="artifactd")
 
     @app.get("/", response_class=HTMLResponse)
@@ -150,7 +152,7 @@ def create_app(
             status="ok",
             result_summary="share override created",
         )
-        return _share_page(artifact, token)
+        return _share_page(artifact, token, request, public_base_url=public_base_url)
 
     @app.post("/_workspace/things/{slug}/requires-action")
     async def workspace_requires_action(slug: str, request: Request, requires_action: str = Form("true"), csrf_token: str = Form("")) -> Response:
@@ -261,7 +263,7 @@ def _index_page(
     lede = (
         "Archived artifacts are hidden from the home page but remain recoverable until pruned."
         if archive
-        else "One workspace for generated Things. Open, Share, Update, Pin, and Archive active work; profile-auth protected Things share one workspace session by default."
+        else "One workspace for generated Things. Each card has Open, Share link, Update, Pin, and Archive controls; profile-auth protected Things share one workspace session by default."
     )
     bucket_links = ""
     if not archive:
@@ -322,6 +324,7 @@ def _index_page(
           .workspace-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }}
           .workspace-actions form {{ margin: 0; }}
           .workspace-actions button {{ padding: 8px 11px; background: rgba(255,255,255,.12); border: 1px solid var(--line); font-size: .88rem; }}
+          .workspace-actions button.share {{ background: var(--accent); border-color: rgba(196,181,253,.75); }}
           .workspace-actions button.danger {{ background: rgba(239,68,68,.18); }}
           code {{ color: #c4b5fd; }}
           .empty {{ border: 1px dashed var(--line); border-radius: 20px; padding: 28px; color: var(--muted); }}
@@ -364,7 +367,7 @@ def _workspace_action_forms(artifact: Artifact, csrf_token: str) -> str:
     action_label = "Clear action" if artifact.requires_action else "Requires action"
     return f"""
       <div class="workspace-actions" aria-label="Workspace actions">
-        <form method="post" action="/_workspace/things/{slug}/share"><input type="hidden" name="csrf_token" value="{token}"><button type="submit">Share</button></form>
+        <form method="post" action="/_workspace/things/{slug}/share"><input type="hidden" name="csrf_token" value="{token}"><button class="share" type="submit">Share link</button></form>
         <form method="post" action="/_workspace/things/{slug}/pin"><input type="hidden" name="csrf_token" value="{token}"><input type="hidden" name="pinned" value="{pin_value}"><button type="submit">{pin_label}</button></form>
         <form method="post" action="/_workspace/things/{slug}/requires-action"><input type="hidden" name="csrf_token" value="{token}"><input type="hidden" name="requires_action" value="{action_value}"><button type="submit">{action_label}</button></form>
         <form method="post" action="/_workspace/things/{slug}/archive"><input type="hidden" name="csrf_token" value="{token}"><button class="danger" type="submit">Archive</button></form>
@@ -573,9 +576,13 @@ def _truthy(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _share_page(artifact: Artifact, token: str) -> HTMLResponse:
+def _share_page(artifact: Artifact, token: str, request: Request, *, public_base_url: Optional[str] = None) -> HTMLResponse:
     escaped_title = html.escape(artifact.title or artifact.slug)
-    escaped_path = html.escape(f"/{artifact.slug}?share={token}", quote=True)
+    relative_path = f"/{artifact.slug}?share={token}"
+    base_url = public_base_url or _external_base_url(request)
+    share_url = f"{base_url}{relative_path}" if base_url else relative_path
+    escaped_path = html.escape(share_url, quote=True)
+    escaped_relative_path = html.escape(relative_path, quote=True)
     body = f"""
     <!doctype html>
     <html lang="en">
@@ -585,12 +592,21 @@ def _share_page(artifact: Artifact, token: str) -> HTMLResponse:
         <h1>Share link created</h1>
         <p>This token unlocks only <strong>{escaped_title}</strong>; the profile workspace password stays private.</p>
         <p><strong>Expires in 7 days.</strong></p>
-        <p><input value="{escaped_path}" readonly style="width:100%;padding:.75rem;font:inherit;"></p>
-        <p><a href="{escaped_path}">Open share link</a></p>
+        <p><input id="share-url" value="{escaped_path}" readonly style="width:100%;padding:.75rem;font:inherit;"></p>
+        <p><button type="button" onclick="navigator.clipboard && navigator.clipboard.writeText(document.getElementById('share-url').value)">Copy link</button> <a href="{escaped_path}">Open share link</a></p>
+        <p style="color:#666;font-size:.9rem;">Path: <code>{escaped_relative_path}</code></p>
       </body>
     </html>
     """
     return HTMLResponse(body)
+
+
+def _external_base_url(request: Request) -> str:
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    if not host:
+        return ""
+    return f"{proto}://{host}".rstrip("/")
 
 
 def _serve_artifact(store: ArtifactStore, slug: str, relative_path: str, request: Request, secret: str) -> Response:

@@ -457,7 +457,7 @@ def test_workspace_home_forms_pin_share_requires_action_and_archive_with_csrf(tm
     store = ArtifactStore(tmp_path / "workspaces")
     store.set_workspace_password("profile-secret")
     store.register_thing(source, slug="thing", title="Thing")
-    client = TestClient(create_app(tmp_path / "workspaces", cookie_secret="test-secret"))
+    client = TestClient(create_app(tmp_path / "workspaces", cookie_secret="test-secret", public_base_url="https://artifacts.example.com"))
 
     no_csrf = client.post("/_workspace/things/thing/pin", data={"pinned": "true"}, follow_redirects=False)
     client.post("/_workspace/login", data={"password": "profile-secret"}, follow_redirects=False)
@@ -474,6 +474,9 @@ def test_workspace_home_forms_pin_share_requires_action_and_archive_with_csrf(tm
     assert actioned.status_code == 303
     assert share.status_code == 200
     assert "Share link created" in share.text
+    assert "Share link" in home.text
+    assert "https://artifacts.example.com/thing?share=" in share.text
+    assert "Copy link" in share.text
     assert "Expires in 7 days" in share.text
     assert token_match
     assert client.get(f"/thing?share={token_match.group(1)}").status_code == 200

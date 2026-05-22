@@ -336,7 +336,7 @@ def serve(
         typer.secho("warning: ARTIFACTD_COOKIE_SECRET is unset; using dev-only cookie secret", fg=typer.colors.YELLOW, err=True)
     if profile:
         os.environ["ARTIFACTD_PROFILE"] = profile
-    uvicorn.run(create_app(ctx.obj["home"], cookie_secret=cookie_secret), host=host, port=port)
+    uvicorn.run(create_app(ctx.obj["home"], cookie_secret=cookie_secret, profile=profile, public_base_url=ctx.obj.get("public_base_url")), host=host, port=port)
 
 
 @app.command("tunnel-runbook")
