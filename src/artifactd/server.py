@@ -802,7 +802,20 @@ def _artifact_share_toolbar(artifact: Artifact, csrf_token: str) -> str:
     compact_select_style = "border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:7px 8px;background:rgba(255,255,255,.10);color:white;font:inherit;"
     compact_datetime_style = "border:1px solid rgba(255,255,255,.18);border-radius:12px;padding:7px 8px;background:rgba(255,255,255,.10);color:white;font:inherit;"
     return f"""
-    <div id="artifactd-share-toolbar" style="position:fixed;right:16px;bottom:16px;z-index:2147483647;display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border:1px solid rgba(255,255,255,.22);border-radius:20px;background:rgba(15,23,42,.94);box-shadow:0 18px 60px rgba(0,0,0,.35);color:white;font:14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+    <style id="artifactd-share-toolbar-style">
+      #artifactd-share-toolbar, #artifactd-share-toolbar * {{ box-sizing:border-box; }}
+      #artifactd-share-toolbar {{ max-width:calc(100vw - 24px); max-height:calc(100vh - 24px); overflow:auto; }}
+      #artifactd-share-toolbar .share-form {{ min-width:0; }}
+      #artifactd-share-toolbar label {{ display:flex; align-items:center; gap:6px; min-width:0; flex:1 1 auto; }}
+      #artifactd-share-toolbar .custom-share-expiry {{ flex:1 1 100%; min-width:0; color:#cbd5e1; }}
+      @media (max-width: 560px) {{
+        #artifactd-share-toolbar {{ left:12px; right:12px; bottom:12px; width:auto; }}
+        #artifactd-share-toolbar > span {{ flex:1 1 100%; max-width:100%; padding-top:0; }}
+        #artifactd-share-toolbar .share-form {{ flex:1 1 100%; max-width:100%; }}
+        #artifactd-share-toolbar button, #artifactd-share-toolbar a {{ flex:0 0 auto; }}
+      }}
+    </style>
+    <div id="artifactd-share-toolbar" style="position:fixed;right:16px;bottom:16px;z-index:2147483647;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;padding:10px 12px;border:1px solid rgba(255,255,255,.22);border-radius:20px;background:rgba(15,23,42,.94);box-shadow:0 18px 60px rgba(0,0,0,.35);color:white;font:14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
       <span style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c4b5fd;font-weight:700;padding-top:9px;">{title}</span>
       <a href="/" style="color:white;text-decoration:none;border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:8px 10px;">Home</a>
       <form class="share-form" method="post" action="/_workspace/things/{slug}/share" style="margin:0;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;max-width:360px;">

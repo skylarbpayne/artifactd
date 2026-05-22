@@ -478,6 +478,10 @@ def test_authenticated_artifact_page_exposes_admin_share_link_without_leaking_to
     assert '<option value="custom">Custom</option>' in admin_view.text
     assert "Custom expiry" in admin_view.text
     assert 'name="expires_at"' in admin_view.text
+    assert "max-width:calc(100vw - 24px)" in admin_view.text
+    assert "max-height:calc(100vh - 24px)" in admin_view.text
+    assert "overflow:auto" in admin_view.text
+    assert "box-sizing:border-box" in admin_view.text
     assert 'action="/_workspace/things/thing/share"' in admin_view.text
     assert csrf_match
 
