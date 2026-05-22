@@ -613,13 +613,14 @@ def _serve_artifact(store: ArtifactStore, slug: str, relative_path: str, request
     artifact = store.get(slug)
     if not artifact:
         raise HTTPException(status_code=404, detail="artifact not found")
+    session_cookie = _workspace_session_cookie(request, secret)
     if artifact.uses_profile_auth:
         share_token = request.query_params.get("share")
-        if not store.verify_share_token(artifact.slug, share_token) and not _has_workspace_session(request, secret):
+        if not store.verify_share_token(artifact.slug, share_token) and not session_cookie:
             return _password_page(artifact, status_code=401)
     elif artifact.password_hash:
         # Legacy per-artifact hashes are no longer accepted. A workspace session is required.
-        if not _has_workspace_session(request, secret):
+        if not session_cookie:
             return _password_page(artifact, status_code=401)
     try:
         file_path = store.resolve_file(artifact, relative_path)
@@ -627,7 +628,44 @@ def _serve_artifact(store: ArtifactStore, slug: str, relative_path: str, request
         raise HTTPException(status_code=404, detail="not found")
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="not found")
+    if session_cookie and _is_html_file(file_path):
+        try:
+            body = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return FileResponse(file_path)
+        csrf_token = _workspace_csrf_token(session_cookie, secret)
+        return HTMLResponse(_inject_artifact_share_toolbar(body, artifact, csrf_token))
     return FileResponse(file_path)
+
+
+def _is_html_file(file_path: Path) -> bool:
+    return file_path.suffix.lower() in {".html", ".htm"}
+
+
+def _inject_artifact_share_toolbar(body: str, artifact: Artifact, csrf_token: str) -> str:
+    toolbar = _artifact_share_toolbar(artifact, csrf_token)
+    lower_body = body.lower()
+    marker = "</body>"
+    index = lower_body.rfind(marker)
+    if index == -1:
+        return body + toolbar
+    return body[:index] + toolbar + body[index:]
+
+
+def _artifact_share_toolbar(artifact: Artifact, csrf_token: str) -> str:
+    slug = html.escape(artifact.slug, quote=True)
+    token = html.escape(csrf_token, quote=True)
+    title = html.escape(artifact.title or artifact.slug)
+    return f"""
+    <div id="artifactd-share-toolbar" style="position:fixed;right:16px;bottom:16px;z-index:2147483647;display:flex;gap:8px;align-items:center;padding:10px 12px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(15,23,42,.94);box-shadow:0 18px 60px rgba(0,0,0,.35);color:white;font:14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      <span style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c4b5fd;font-weight:700;">{title}</span>
+      <a href="/" style="color:white;text-decoration:none;border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:8px 10px;">Home</a>
+      <form method="post" action="/_workspace/things/{slug}/share" style="margin:0;">
+        <input type="hidden" name="csrf_token" value="{token}">
+        <button type="submit" style="border:0;border-radius:999px;padding:8px 12px;background:#8b5cf6;color:white;font:inherit;font-weight:800;cursor:pointer;">Share link</button>
+      </form>
+    </div>
+    """
 
 
 def _password_page(artifact: Artifact, *, status_code: int = 401, message: str = "Password required") -> HTMLResponse:

@@ -451,6 +451,29 @@ def test_action_manifest_and_audit_use_hermes_profile_bridge_actor(tmp_path: Pat
     assert audits[-1].capability == "kanban.comment"
 
 
+def test_authenticated_artifact_page_exposes_admin_share_link_without_leaking_to_shared_view(tmp_path: Path):
+    source = tmp_path / "thing.html"
+    source.write_text("<!doctype html><html><body><h1>Thing</h1></body></html>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "workspaces")
+    store.set_workspace_password("profile-secret")
+    store.register_thing(source, slug="thing", title="Thing")
+    store.create_share_override("thing", token="review-token")
+    client = TestClient(create_app(tmp_path / "workspaces", cookie_secret="test-secret"))
+
+    shared = client.get("/thing?share=review-token")
+    client.post("/_workspace/login", data={"password": "profile-secret"}, follow_redirects=False)
+    admin_view = client.get("/thing")
+    csrf_match = re.search(r'name="csrf_token" value="([^"]+)"', admin_view.text)
+
+    assert shared.status_code == 200
+    assert admin_view.status_code == 200
+    assert "artifactd-share-toolbar" not in shared.text
+    assert "artifactd-share-toolbar" in admin_view.text
+    assert "Share link" in admin_view.text
+    assert 'action="/_workspace/things/thing/share"' in admin_view.text
+    assert csrf_match
+
+
 def test_workspace_home_forms_pin_share_requires_action_and_archive_with_csrf(tmp_path: Path):
     source = tmp_path / "thing.html"
     source.write_text("<h1>Thing</h1>", encoding="utf-8")
