@@ -340,6 +340,8 @@ def _index_page(
           .workspace-actions .share-form {{ display: flex; flex: 1 1 100%; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 18px; background: rgba(139,92,246,.12); }}
           .workspace-actions .share-form label {{ display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .82rem; font-weight: 800; }}
           .workspace-actions .share-form select, .workspace-actions .share-form input[type="datetime-local"] {{ flex: 0 1 145px; padding: 8px 10px; font-size: .88rem; }}
+          .workspace-actions .custom-share-expiry {{ flex: 1 1 100%; color: var(--muted); font-size: .82rem; }}
+          .workspace-actions .custom-share-expiry summary {{ cursor: pointer; width: fit-content; }}
           .workspace-actions button {{ padding: 8px 11px; background: rgba(255,255,255,.12); border: 1px solid var(--line); font-size: .88rem; }}
           .workspace-actions button.share {{ background: var(--accent); border-color: rgba(196,181,253,.75); }}
           .workspace-actions button.danger {{ background: rgba(239,68,68,.18); }}
@@ -395,8 +397,11 @@ def _workspace_action_forms(artifact: Artifact, csrf_token: str) -> str:
               <option value="custom">Custom</option>
             </select>
           </label>
-          <input type="datetime-local" name="expires_at" aria-label="Custom share expiry" title="Custom share expiry in UTC">
           <button class="share" type="submit">Share link</button>
+          <details class="custom-share-expiry">
+            <summary>Custom expiry</summary>
+            <input type="datetime-local" name="expires_at" aria-label="Custom share expiry" title="Custom share expiry in UTC">
+          </details>
         </form>
         <form method="post" action="/_workspace/things/{slug}/pin"><input type="hidden" name="csrf_token" value="{token}"><input type="hidden" name="pinned" value="{pin_value}"><button type="submit">{pin_label}</button></form>
         <form method="post" action="/_workspace/things/{slug}/requires-action"><input type="hidden" name="csrf_token" value="{token}"><input type="hidden" name="requires_action" value="{action_value}"><button type="submit">{action_label}</button></form>
