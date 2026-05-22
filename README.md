@@ -128,6 +128,42 @@ artifactd --home "$WORKSPACE_HOME" serve --profile "$PROFILE" --port "$PORT"
 
 In production, run that final command under the machine's process manager: `launchd` on macOS, `systemd` on Linux, or the profile's existing service runner.
 
+## Update protocol for existing consumers
+
+When `main` changes, consumers need to update the local checkout **and restart the running sidecar**. A pulled repo does not update a long-running `artifactd` process until the service is restarted.
+
+From the consumer machine/profile:
+
+```bash
+cd /path/to/artifactd
+git fetch origin
+git pull --ff-only origin main
+
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+python -m py_compile src/artifactd/*.py
+pytest tests -q
+git diff --check
+```
+
+Then restart the process that serves that profile:
+
+- `launchd` on macOS: `sudo launchctl kickstart -k system/<artifactd-service-label>`
+- `systemd` on Linux: `sudo systemctl restart <artifactd-service-name>`
+- foreground/dev server: stop it and rerun the documented `artifactd --home ... serve ...` command
+
+After restart, verify the served URL, not just the local checkout:
+
+```bash
+curl -o /dev/null -s -w '%{http_code}\n' https://<artifact-host>/
+curl -o /dev/null -s -w '%{http_code}\n' https://<artifact-host>/<known-public-slug>
+curl -o /dev/null -s -w '%{http_code}\n' https://<artifact-host>/<known-protected-slug>
+```
+
+Expected results for a password-protected workspace are: `/` returns `401` before login, public Things return `200`, protected Things return `401` before login. Browser-login to Workspace Home should show per-card **Share link** controls; creating one should produce a full `https://.../<slug>?share=...` URL with a 7-day expiry.
+
+For agents/people consuming this repo, the handoff rule is: if a change matters to other consumers, commit it, push it to `origin/main`, and include these update/restart/verify steps in the handoff. Local-only fixes do not count as shipped.
+
 ## Deploy/register a Thing
 
 For profile/workspace auth, use `workspaces register` rather than legacy public deploys:
@@ -247,8 +283,8 @@ ARTIFACTD_COOKIE_SECRET="change-me" artifactd serve --port 8787
 # Deploy public artifact
 artifactd deploy ./demo.html --slug demo --title "Demo" --description "Visual review board" --tag demo
 
-# Deploy custom-password artifact; prefer workspace auth for normal agent Things
-artifactd deploy ./dist --slug investor-memo --title "Investor Memo" --password "secret"
+# Legacy standalone public artifact home; prefer workspace auth for normal agent Things
+artifactd deploy ./dist --slug investor-memo --title "Investor Memo"
 
 # Manage artifacts
 artifactd list
@@ -330,7 +366,8 @@ Current executable capabilities:
 Palmer:
 
 ```text
-storage: /Users/skylarpayne/.hermes/artifacts
+storage: /Users/skylarpayne/.hermes/profiles/palmer/workspaces
+legacy path: /Users/skylarpayne/.hermes/artifacts -> profile workspace symlink
 origin:  http://127.0.0.1:8787
 public:  https://artifacts.skylarbpayne.com/<slug>
 service: /Library/LaunchDaemons/com.skylar.artifactd.plist
