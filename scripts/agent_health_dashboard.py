@@ -161,6 +161,54 @@ def codex_auth_summary(home: pathlib.Path) -> dict[str, str]:
     return {"status": "warn", "evidence": f"Codex auth file missing at {auth_file}"}
 
 
+def parse_cron_list_output(text: str) -> dict[str, Any]:
+    jobs: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        job = re.match(r"\s*([a-z0-9]{4,})\s+\[([^\]]+)\]", line)
+        if job:
+            if current:
+                jobs.append(current)
+            current = {"id": job.group(1), "status": job.group(2), "name": job.group(1), "last_run": ""}
+            continue
+        if current and line.strip().startswith("Name:"):
+            current["name"] = line.split("Name:", 1)[1].strip()
+        elif current and line.strip().startswith("Last run:"):
+            current["last_run"] = line.split("Last run:", 1)[1].strip()
+    if current:
+        jobs.append(current)
+    failed_jobs = [j["name"] for j in jobs if j.get("last_run") and not j["last_run"].lower().endswith(" ok")]
+    return {
+        "total": len(jobs),
+        "active": sum(1 for j in jobs if j.get("status") == "active"),
+        "paused": sum(1 for j in jobs if j.get("status") == "paused"),
+        "failed_last_runs": len(failed_jobs),
+        "failed_jobs": failed_jobs[:8],
+    }
+
+
+def summarize_recent_log_errors(log_paths: list[pathlib.Path], max_lines: int = 200) -> dict[str, Any]:
+    patterns = re.compile(r"(?i)(error|traceback|exception|failed|fatal)")
+    samples: list[str] = []
+    error_lines = 0
+    files_checked = 0
+    for path in log_paths:
+        if not path.exists() or not path.is_file():
+            continue
+        files_checked += 1
+        try:
+            lines = path.read_text(errors="ignore").splitlines()[-max_lines:]
+        except OSError:
+            continue
+        for line in lines:
+            if patterns.search(line):
+                error_lines += 1
+                if len(samples) < 8:
+                    samples.append(f"{path.name}: {redact(line, 220)}")
+    return {"files_checked": files_checked, "error_lines": error_lines, "samples": samples}
+
+
 def add_check(checks: list[Check], **kwargs: Any) -> None:
     checks.append(Check(**kwargs))
 
@@ -437,6 +485,39 @@ def check_codex_auth(checks: list[Check]) -> None:
     )
 
 
+def check_cron_health(checks: list[Check]) -> None:
+    rc, out, err, secs = run(["hermes", "-p", "palmer", "cron", "list"], os.environ.copy(), 30)
+    if rc == 0:
+        summary = parse_cron_list_output(out)
+        failed = summary["failed_last_runs"]
+        status = "fail" if failed else "ok"
+        evidence = f"total={summary['total']}; active={summary['active']}; paused={summary['paused']}; failed_last_runs={failed}"
+        if summary["failed_jobs"]:
+            evidence += "; failed jobs: " + ", ".join(summary["failed_jobs"])
+        remediation = "Inspect the failed job output before adding more cron noise." if failed else ""
+        title = "Cron jobs healthy" if not failed else "Cron jobs have failed recent runs"
+    else:
+        status = "fail"
+        title = "Cron list failed"
+        evidence = redact(err or out, 360)
+        remediation = "Run `hermes -p palmer cron status` and inspect scheduler logs."
+    add_check(checks, id="cron-health", agent="Palmer", app="Hermes cron", account="palmer profile", operation="cron list", status=status, summary=title, evidence=evidence, remediation=remediation, seconds=secs)
+
+
+def check_recent_logs(checks: list[Check]) -> None:
+    start = time.time()
+    base = PALMER_PROFILE / "logs"
+    log_paths = [base / name for name in ["gateway.error.log", "errors.log", "agent.log", "gateway.log", "palmer-artifacts.err.log"]]
+    summary = summarize_recent_log_errors(log_paths)
+    error_lines = summary["error_lines"]
+    status = "warn" if error_lines else "ok"
+    evidence = f"files_checked={summary['files_checked']}; recent_error_lines={error_lines}"
+    if summary["samples"]:
+        evidence += " | samples: " + " || ".join(summary["samples"])
+    remediation = "Open the named log file(s) and fix the newest repeated error; samples are redacted/truncated." if error_lines else ""
+    add_check(checks, id="recent-log-health", agent="Palmer", app="Recent logs", account="palmer profile", operation="scan last log lines", status=status, summary="Recent logs contain errors" if error_lines else "No recent log errors in scanned files", evidence=evidence, remediation=remediation, seconds=time.time() - start)
+
+
 def collect_checks() -> list[Check]:
     checks: list[Check] = []
     palmer_env = load_profile_env(PALMER_PROFILE)
@@ -468,6 +549,8 @@ def collect_checks() -> list[Check]:
     check_kanban_artifactd(checks)
     check_runtime_ops(checks)
     check_codex_auth(checks)
+    check_cron_health(checks)
+    check_recent_logs(checks)
     return checks
 
 

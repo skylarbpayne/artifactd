@@ -62,7 +62,7 @@ PROJECTS: dict[str, ProjectSpec] = {
         key="wedding",
         name="Our Wedding",
         slug="project-dashboard-wedding",
-        aliases=("our wedding", "wedding", "jacqueline", "matinae", "fairy godmother", "the social vibe", "gabe"),
+        aliases=("our wedding", "j + s wedding", "wedding planning 2027", "wedding", "matinae", "fairy godmother", "the social vibe"),
         note_paths=(
             "1_Projects/Our Wedding.md",
             "1_Projects/Our Wedding - Lay of Land Audit 2026-05-04.md",
@@ -259,6 +259,39 @@ def load_artifacts(db_path: Path, aliases: tuple[str, ...]) -> list[dict[str, An
     )
 
 
+def infer_project_summary(data: dict[str, Any]) -> dict[str, str]:
+    kanban = data.get("kanban", {})
+    blockers = kanban.get("blockers") or []
+    next_actions = kanban.get("next_actions") or []
+    source_notes = data.get("source_notes") or []
+    current_truth = next((n.get("summary") for n in source_notes if n.get("summary")), "No current-truth line extracted from source notes.")
+    if blockers:
+        first = blockers[0]
+        return {
+            "status": "blocked",
+            "headline": f"Blocked: {kanban.get('blocked_count', len(blockers))} items need attention",
+            "current_truth": current_truth,
+            "next_move": f"Unblock: {first.get('title', 'blocked item')}",
+            "owner": str(first.get("assignee") or "unassigned"),
+        }
+    if next_actions:
+        first = next_actions[0]
+        return {
+            "status": "active",
+            "headline": f"Active: {len(next_actions)} next actions",
+            "current_truth": current_truth,
+            "next_move": str(first.get("title") or "Pick the next active card"),
+            "owner": str(first.get("assignee") or "unassigned"),
+        }
+    return {
+        "status": "clear",
+        "headline": "No matching active Kanban items",
+        "current_truth": current_truth,
+        "next_move": "Review source note and decide whether this project needs a fresh task or can stay quiet.",
+        "owner": "Skylar + Palmer",
+    }
+
+
 def resolve_entity_paths(vault: Path, names: Iterable[str]) -> list[dict[str, str]]:
     people_dir = vault / "3_Resources" / "CRM" / "People"
     companies_dir = vault / "3_Resources" / "CRM" / "Companies"
@@ -338,7 +371,7 @@ def build_project_data(spec: ProjectSpec, vault: Path, kanban_db: Path, artifact
     done_tasks = [t for t in tasks if t["status"] == "done"]
     blockers = [t for t in live_tasks if t["status"] == "blocked"]
     next_actions = [t for t in live_tasks if t["status"] in {"ready", "todo", "running"}]
-    return {
+    data = {
         "key": spec.key,
         "name": spec.name,
         "slug": spec.slug,
@@ -361,6 +394,8 @@ def build_project_data(spec: ProjectSpec, vault: Path, kanban_db: Path, artifact
         "artifacts": artifacts,
         "truth_boundary": "Skyvault and Kanban are truth. This artifact is a visual/action surface only; browser-local checks are convenience state.",
     }
+    data["summary"] = infer_project_summary(data)
+    return data
 
 
 def markdown_to_html(md: str, max_lines: int = 18) -> str:
@@ -415,6 +450,16 @@ def render_dashboard(data: dict[str, Any], all_projects: list[dict[str, Any]]) -
         for p in all_projects
     )
     data_json = html.escape(json.dumps(data, ensure_ascii=False), quote=False)
+    summary = data.get("summary", {})
+    summary_html = f"""
+      <article class="card full project-summary {html.escape(str(summary.get('status', 'clear')))}">
+        <div class="eyebrow">project summary</div>
+        <h2>{html.escape(str(summary.get('headline', 'No summary')))}</h2>
+        <p><strong>Current truth:</strong> {html.escape(str(summary.get('current_truth', 'No current truth extracted.')))}</p>
+        <p><strong>Next move:</strong> {html.escape(str(summary.get('next_move', 'Pick the next concrete move.')))}</p>
+        <div class="meta-row"><span>Owner: {html.escape(str(summary.get('owner', 'Skylar + Palmer')))}</span><span>Status: {html.escape(str(summary.get('status', 'clear')))}</span></div>
+      </article>
+    """
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -465,6 +510,7 @@ button, select {{ background:var(--panel2); color:var(--text); border:1px solid 
 .receipt {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.78rem; color:var(--muted); white-space:pre-wrap; }}
 .local-check {{ display:flex; gap:8px; align-items:flex-start; margin:8px 0; color:var(--muted); }}
 .source-card {{ min-height:260px; }}
+.project-summary {{ border-left:6px solid var(--ok); }} .project-summary.blocked {{ border-left-color:var(--bad); }} .project-summary.active {{ border-left-color:var(--warn); }}
 @media (max-width: 980px) {{ .shell {{ grid-template-columns:1fr; }} aside {{ position:relative; height:auto; }} .card,.card.wide {{ grid-column:1 / -1; }} main {{ padding:18px; }} }}
 </style>
 </head>
@@ -485,6 +531,7 @@ button, select {{ background:var(--panel2); color:var(--text); border:1px solid 
   <div class="toolbar"><button onclick="window.print()">Print / PDF</button><button onclick="localStorage.clear(); location.reload()">Clear local checkmarks</button><select id="taskFilter"><option value="all">All active cards</option><option value="blocked">Blocked only</option><option value="ready">Ready/todo/running only</option></select></div>
 </section>
 <section class="grid">
+  {summary_html}
   <article class="card"><div class="eyebrow">active Kanban</div><div class="stat">{data['kanban']['active_count']}</div><p>Matching non-done task cards across aliases.</p></article>
   <article class="card"><div class="eyebrow">blocked</div><div class="stat">{data['kanban']['blocked_count']}</div><p>Things that need a human, credential, vendor, or external answer.</p></article>
   <article class="card"><div class="eyebrow">entities</div><div class="stat">{len(data['entities'])}</div><p>People/org links resolved from frontmatter and wikilinks.</p></article>

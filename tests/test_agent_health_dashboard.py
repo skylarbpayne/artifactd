@@ -3,7 +3,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from agent_health_dashboard import process_inventory, codex_auth_summary, render_html, Check
+from agent_health_dashboard import (
+    Check,
+    codex_auth_summary,
+    parse_cron_list_output,
+    process_inventory,
+    render_html,
+    summarize_recent_log_errors,
+)
 
 
 def test_process_inventory_groups_agent_runtime_processes_without_leaking_full_commands():
@@ -61,3 +68,45 @@ def test_render_html_includes_ops_console_language():
     assert "ops console" in html.lower()
     assert "Runtime processes" in html
     assert "Codex" in html
+
+
+def test_parse_cron_list_output_counts_active_paused_and_failed_runs():
+    text = """
+  abc123 [active]
+    Name:      Morning brief
+    Schedule:  45 7 * * *
+    Last run:  2026-05-21T07:51:08-07:00  ok
+
+  def456 [paused]
+    Name:      Old watchdog
+    Schedule:  every 10m
+    Last run:  2026-05-20T07:51:08-07:00  error
+
+  ghi789 [active]
+    Name:      Decision batch
+    Schedule:  30 16 * * 1-5
+    Last run:  2026-05-21T16:31:57-07:00  failed
+"""
+
+    summary = parse_cron_list_output(text)
+
+    assert summary["total"] == 3
+    assert summary["active"] == 2
+    assert summary["paused"] == 1
+    assert summary["failed_last_runs"] == 2
+    assert summary["failed_jobs"] == ["Old watchdog", "Decision batch"]
+
+
+def test_summarize_recent_log_errors_redacts_and_limits(tmp_path):
+    log = tmp_path / "gateway.error.log"
+    log.write_text(
+        "INFO fine\nERROR failed with Bearer secret-token-value\nTraceback: boom\nWARN not counted\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_recent_log_errors([log], max_lines=10)
+
+    assert summary["error_lines"] == 2
+    assert summary["files_checked"] == 1
+    assert "Bearer REDACTED" in summary["samples"][0]
+    assert "secret-token-value" not in str(summary)

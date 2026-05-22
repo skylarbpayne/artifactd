@@ -5,12 +5,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from project_dashboard_generator import (
+    PROJECTS,
     ProjectSpec,
     build_project_data,
     deploy_outputs,
     extract_checkboxes,
     extract_sections,
     extract_wikilinks,
+    infer_project_summary,
+    load_kanban_tasks,
     parse_frontmatter,
     resolve_entity_paths,
     write_outputs,
@@ -51,6 +54,42 @@ More [[Seth Parker|Seth]]
         {"done": "False", "text": "choose thing"},
         {"done": "True", "text": "done thing"},
     ]
+
+
+def test_infer_project_summary_prioritizes_blockers_and_source_summary():
+    data = {
+        "source_notes": [{"summary": "Venue lock is the live project truth"}],
+        "kanban": {
+            "active_count": 4,
+            "blocked_count": 2,
+            "blockers": [{"title": "Approve vendor contract", "assignee": "skylar"}],
+            "next_actions": [{"title": "Draft sponsor note", "assignee": "palmer"}],
+        },
+    }
+
+    summary = infer_project_summary(data)
+
+    assert summary["status"] == "blocked"
+    assert summary["headline"] == "Blocked: 2 items need attention"
+    assert summary["current_truth"] == "Venue lock is the live project truth"
+    assert summary["next_move"] == "Unblock: Approve vendor contract"
+    assert summary["owner"] == "skylar"
+
+
+def test_wedding_kanban_aliases_do_not_match_generic_jacqueline_work(tmp_path):
+    assert "jacqueline" not in PROJECTS["wedding"].aliases
+    db = tmp_path / "kanban.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE tasks (id TEXT, title TEXT, status TEXT, priority INTEGER, assignee TEXT, created_at INTEGER, completed_at INTEGER, body TEXT)"
+    )
+    con.execute("INSERT INTO tasks VALUES ('t_1','Set up Jacqueline Outlook','blocked',5,'palmer',1,NULL,'agora comms')")
+    con.execute("INSERT INTO tasks VALUES ('t_2','Our Wedding venue contract','blocked',5,'skylar',2,NULL,'wedding blocker')")
+    con.commit(); con.close()
+
+    tasks = load_kanban_tasks(db, PROJECTS["wedding"].aliases)
+
+    assert [task["id"] for task in tasks] == ["t_2"]
 
 
 def test_build_project_data_from_fixture(tmp_path):
@@ -96,6 +135,8 @@ key_people: [Jacqueline Aguilar]
     )
     data = build_project_data(spec, vault, kanban_db, artifact_db)
     assert data["source_notes"][0]["summary"] == "Wedding date locked"
+    assert data["summary"]["current_truth"] == "Wedding date locked"
+    assert data["summary"]["headline"] == "Active: 1 next actions"
     assert data["kanban"]["active_count"] == 1
     assert data["entities"][0]["rel_path"] == "3_Resources/CRM/People/Jacqueline Aguilar.md"
     assert data["artifacts"][0]["slug"] == "wedding-demo"
@@ -134,6 +175,7 @@ def test_write_outputs_creates_directory_deployable_index(tmp_path):
         "owner_hint": "Skylar + Jacqueline",
         "generated_at_iso": "2026-05-18T12:00:00",
         "truth_boundary": "Truth stays elsewhere.",
+        "summary": {"status": "clear", "headline": "Clear", "current_truth": "No summary", "next_move": "Pick next move", "owner": "Skylar + Palmer"},
         "source_notes": [],
         "entities": [],
         "kanban": {"active_count": 0, "blocked_count": 0, "done_sample_count": 0, "blockers": [], "next_actions": [], "recent_done": []},
