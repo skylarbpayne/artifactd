@@ -211,6 +211,17 @@ def table_from_db(db_path: Path, query: str, params: tuple[Any, ...] = ()) -> li
         con.close()
 
 
+def is_project_health_candidate(task: dict[str, Any]) -> bool:
+    """Reject telemetry/meta Kanban rows that mention a project but are not project work."""
+    haystack = f"{task.get('title', '')} {task.get('body', '')}".lower()
+    telemetry_markers = (
+        "daily dashboard progress log",
+        "backing log for the protected daily dashboard action buttons",
+        "this is telemetry, not authoritative project closure",
+    )
+    return not any(marker in haystack for marker in telemetry_markers)
+
+
 def load_kanban_tasks(db_path: Path, aliases: tuple[str, ...]) -> list[dict[str, Any]]:
     clauses = []
     params: list[str] = []
@@ -233,6 +244,7 @@ def load_kanban_tasks(db_path: Path, aliases: tuple[str, ...]) -> list[dict[str,
         """,
         tuple(params),
     )
+    rows = [r for r in rows if is_project_health_candidate(r)]
     active = [r for r in rows if r["status"] != "done"]
     done = [r for r in rows if r["status"] == "done"][:12]
     return active + done

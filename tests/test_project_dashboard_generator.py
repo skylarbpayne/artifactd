@@ -13,6 +13,7 @@ from project_dashboard_generator import (
     extract_sections,
     extract_wikilinks,
     infer_project_summary,
+    is_project_health_candidate,
     load_kanban_tasks,
     parse_frontmatter,
     resolve_entity_paths,
@@ -74,6 +75,17 @@ def test_infer_project_summary_prioritizes_blockers_and_source_summary():
     assert summary["current_truth"] == "Venue lock is the live project truth"
     assert summary["next_move"] == "Unblock: Approve vendor contract"
     assert summary["owner"] == "skylar"
+
+
+def test_project_health_candidate_rejects_daily_dashboard_telemetry():
+    telemetry = {
+        "title": "2026-05-18 daily dashboard progress log",
+        "body": "Backing log for the protected daily dashboard action buttons. Current owning task anchors: HTV lanes: t_1 / t_2",
+    }
+    real_project_task = {"title": "HTV: pick up print order", "body": "Hack the Valley event ops"}
+
+    assert not is_project_health_candidate(telemetry)
+    assert is_project_health_candidate(real_project_task)
 
 
 def test_wedding_kanban_aliases_do_not_match_generic_jacqueline_work(tmp_path):
