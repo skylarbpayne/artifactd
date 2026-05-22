@@ -340,9 +340,9 @@ def _index_page(
           .workspace-actions:focus {{ outline: 2px solid rgba(196,181,253,.75); outline-offset: 3px; }}
           .workspace-actions-trigger {{ display: inline-grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 999px; color: #fff; background: linear-gradient(135deg, #8b5cf6, #6366f1); font-weight: 900; line-height: 1; transition: opacity .14s ease, width .18s ease, flex-basis .18s ease; }}
           .workspace-actions > form {{ margin: 0; opacity: 0; visibility: hidden; pointer-events: none; max-width: 0; max-height: 0; overflow: hidden; transform: translateY(2px); transition: opacity .14s ease, transform .14s ease, max-width .18s ease, max-height .18s ease; }}
-          .card:hover .workspace-actions, .card:focus-within .workspace-actions, .workspace-actions:hover, .workspace-actions:focus, .workspace-actions:focus-within {{ width: 100%; height: auto; min-height: 0; padding: 10px; border-radius: 18px; background: rgba(139,92,246,.16); overflow: visible; }}
-          .card:hover .workspace-actions-trigger, .card:focus-within .workspace-actions-trigger, .workspace-actions:hover .workspace-actions-trigger, .workspace-actions:focus .workspace-actions-trigger, .workspace-actions:focus-within .workspace-actions-trigger {{ opacity: 0; flex-basis: 0; width: 0; overflow: hidden; }}
-          .card:hover .workspace-actions > form, .card:focus-within .workspace-actions > form, .workspace-actions:hover > form, .workspace-actions:focus > form, .workspace-actions:focus-within > form {{ opacity: 1; visibility: visible; pointer-events: auto; max-width: 100%; max-height: 18rem; transform: none; overflow: visible; }}
+          .workspace-actions:hover, .workspace-actions:focus, .workspace-actions:focus-within {{ width: 100%; height: auto; min-height: 0; padding: 10px; border-radius: 18px; background: rgba(139,92,246,.16); overflow: visible; }}
+          .workspace-actions:hover .workspace-actions-trigger, .workspace-actions:focus .workspace-actions-trigger, .workspace-actions:focus-within .workspace-actions-trigger {{ opacity: 0; flex-basis: 0; width: 0; overflow: hidden; }}
+          .workspace-actions:hover > form, .workspace-actions:focus > form, .workspace-actions:focus-within > form {{ opacity: 1; visibility: visible; pointer-events: auto; max-width: 100%; max-height: 18rem; transform: none; overflow: visible; }}
           .workspace-actions .share-form {{ display: flex; flex: 1 1 100%; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 18px; background: rgba(139,92,246,.12); }}
           .workspace-actions .share-form label {{ display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .82rem; font-weight: 800; }}
           .workspace-actions .share-form select {{ flex: 0 1 145px; padding: 8px 34px 8px 12px; font-size: .88rem; appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 20 20' fill='none' stroke='%23dbeafe' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 7 5 5 5-5'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 14px; }}
@@ -818,9 +818,10 @@ def _artifact_share_toolbar(artifact: Artifact, csrf_token: str) -> str:
         background:rgba(15,23,42,.90); backdrop-filter:blur(14px);
         box-shadow:0 14px 44px rgba(0,0,0,.32); color:white;
         font:14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-        transition:width .18s ease, padding .18s ease, border-radius .18s ease, background .18s ease, box-shadow .18s ease;
+        transition:width .16s ease, padding .16s ease, border-radius .16s ease, background .16s ease, box-shadow .16s ease;
       }}
-      #artifactd-share-toolbar:hover, #artifactd-share-toolbar:focus, #artifactd-share-toolbar:focus-within {{
+      #artifactd-share-toolbar::before {{ content:""; position:absolute; inset:-10px; border-radius:28px; pointer-events:none; }}
+      #artifactd-share-toolbar:hover, #artifactd-share-toolbar:focus, #artifactd-share-toolbar:focus-within, #artifactd-share-toolbar.artifactd-share-toolbar-open {{
         width:560px; height:auto; padding:10px 12px; overflow:auto;
         align-items:flex-start; flex-wrap:wrap; border-radius:20px; background:rgba(15,23,42,.96);
         box-shadow:0 18px 60px rgba(0,0,0,.36);
@@ -828,11 +829,12 @@ def _artifact_share_toolbar(artifact: Artifact, csrf_token: str) -> str:
       #artifactd-share-toolbar__trigger {{
         flex:0 0 32px; width:32px; height:32px; display:grid; place-items:center;
         border-radius:999px; background:linear-gradient(135deg,#8b5cf6,#38bdf8); color:white;
-        font-weight:900; letter-spacing:-.03em; user-select:none; transition:opacity .12s ease, transform .18s ease, width .18s ease, flex-basis .18s ease;
+        font-weight:900; letter-spacing:-.03em; user-select:none; transition:opacity .12s ease, transform .16s ease;
       }}
       #artifactd-share-toolbar:hover #artifactd-share-toolbar__trigger,
       #artifactd-share-toolbar:focus #artifactd-share-toolbar__trigger,
-      #artifactd-share-toolbar:focus-within #artifactd-share-toolbar__trigger {{ opacity:0; transform:scale(.84); width:0; flex-basis:0; overflow:hidden; }}
+      #artifactd-share-toolbar:focus-within #artifactd-share-toolbar__trigger,
+      #artifactd-share-toolbar.artifactd-share-toolbar-open #artifactd-share-toolbar__trigger {{ opacity:.45; transform:scale(.92); }}
       #artifactd-share-toolbar .artifactd-toolbar-title,
       #artifactd-share-toolbar .artifactd-toolbar-home,
       #artifactd-share-toolbar .share-form {{
@@ -847,13 +849,16 @@ def _artifact_share_toolbar(artifact: Artifact, csrf_token: str) -> str:
       #artifactd-share-toolbar:focus .share-form,
       #artifactd-share-toolbar:focus-within .artifactd-toolbar-title,
       #artifactd-share-toolbar:focus-within .artifactd-toolbar-home,
-      #artifactd-share-toolbar:focus-within .share-form {{ opacity:1; visibility:visible; pointer-events:auto; max-width:100%; }}
+      #artifactd-share-toolbar:focus-within .share-form,
+      #artifactd-share-toolbar.artifactd-share-toolbar-open .artifactd-toolbar-title,
+      #artifactd-share-toolbar.artifactd-share-toolbar-open .artifactd-toolbar-home,
+      #artifactd-share-toolbar.artifactd-share-toolbar-open .share-form {{ opacity:1; visibility:visible; pointer-events:auto; max-width:100%; }}
       #artifactd-share-toolbar .artifactd-toolbar-title {{ max-width:220px; text-overflow:ellipsis; white-space:nowrap; color:#c4b5fd; font-weight:800; padding-top:9px; }}
       #artifactd-share-toolbar .artifactd-toolbar-home {{ color:white; text-decoration:none; border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:8px 10px; }}
       #artifactd-share-toolbar .share-form {{ margin:0; display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap; min-width:0; }}
-      #artifactd-share-toolbar:not(:hover):not(:focus):not(:focus-within) .artifactd-toolbar-title,
-      #artifactd-share-toolbar:not(:hover):not(:focus):not(:focus-within) .artifactd-toolbar-home,
-      #artifactd-share-toolbar:not(:hover):not(:focus):not(:focus-within) .share-form {{
+      #artifactd-share-toolbar:not(:hover):not(:focus):not(:focus-within):not(.artifactd-share-toolbar-open) .artifactd-toolbar-title,
+      #artifactd-share-toolbar:not(:hover):not(:focus):not(:focus-within):not(.artifactd-share-toolbar-open) .artifactd-toolbar-home,
+      #artifactd-share-toolbar:not(:hover):not(:focus):not(:focus-within):not(.artifactd-share-toolbar-open) .share-form {{
         width:0; height:0; max-width:0; max-height:0; padding:0; margin:0; border-width:0; overflow:hidden;
       }}
       #artifactd-share-toolbar label {{ display:flex; align-items:center; gap:6px; min-width:0; flex:1 1 auto; }}
@@ -868,7 +873,7 @@ def _artifact_share_toolbar(artifact: Artifact, csrf_token: str) -> str:
       #artifactd-share-toolbar button[type="submit"] {{ border:0; border-radius:999px; padding:8px 12px; background:#8b5cf6; color:white; font:inherit; font-weight:800; cursor:pointer; }}
       @media (max-width: 560px) {{
         #artifactd-share-toolbar {{ left:auto; right:12px; bottom:12px; width:44px; height:44px; min-height:44px; }}
-        #artifactd-share-toolbar:hover, #artifactd-share-toolbar:focus, #artifactd-share-toolbar:focus-within {{ left:12px; right:12px; width:auto; height:auto; }}
+        #artifactd-share-toolbar:hover, #artifactd-share-toolbar:focus, #artifactd-share-toolbar:focus-within, #artifactd-share-toolbar.artifactd-share-toolbar-open {{ left:12px; right:12px; width:auto; height:auto; }}
         #artifactd-share-toolbar .artifactd-toolbar-title {{ flex:1 1 100%; max-width:100%; padding-top:0; }}
         #artifactd-share-toolbar .share-form {{ flex:1 1 100%; max-width:100%; }}
         #artifactd-share-toolbar button, #artifactd-share-toolbar a {{ flex:0 0 auto; }}
@@ -884,6 +889,29 @@ def _artifact_share_toolbar(artifact: Artifact, csrf_token: str) -> str:
         <button type="submit">Share link</button>
       </form>
     </div>
+    <script>
+      (() => {{
+        const toolbar = document.getElementById('artifactd-share-toolbar');
+        if (!toolbar) return;
+        let closeTimer = 0;
+        const open = () => {{
+          window.clearTimeout(closeTimer);
+          toolbar.classList.add('artifactd-share-toolbar-open');
+        }};
+        const close = () => {{
+          window.clearTimeout(closeTimer);
+          closeTimer = window.setTimeout(() => {{
+            if (!toolbar.matches(':hover, :focus, :focus-within')) {{
+              toolbar.classList.remove('artifactd-share-toolbar-open');
+            }}
+          }}, 220);
+        }};
+        toolbar.addEventListener('mouseenter', open);
+        toolbar.addEventListener('focusin', open);
+        toolbar.addEventListener('mouseleave', close);
+        toolbar.addEventListener('focusout', close);
+      }})();
+    </script>
     """
 
 
