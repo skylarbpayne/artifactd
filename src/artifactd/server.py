@@ -388,20 +388,8 @@ def _workspace_action_forms(artifact: Artifact, csrf_token: str) -> str:
       <div class="workspace-actions" aria-label="Workspace actions">
         <form class="share-form" method="post" action="/_workspace/things/{slug}/share">
           <input type="hidden" name="csrf_token" value="{token}">
-          <label>Share duration
-            <select name="expires_in" aria-label="Share duration">
-              <option value="3600">1 hour</option>
-              <option value="86400">1 day</option>
-              <option value="604800" selected>7 days</option>
-              <option value="2592000">30 days</option>
-              <option value="custom">Custom</option>
-            </select>
-          </label>
+          {_share_expiry_controls()}
           <button class="share" type="submit">Share link</button>
-          <details class="custom-share-expiry">
-            <summary>Custom expiry</summary>
-            <input type="datetime-local" name="expires_at" aria-label="Custom share expiry" title="Custom share expiry in UTC">
-          </details>
         </form>
         <form method="post" action="/_workspace/things/{slug}/pin"><input type="hidden" name="csrf_token" value="{token}"><input type="hidden" name="pinned" value="{pin_value}"><button type="submit">{pin_label}</button></form>
         <form method="post" action="/_workspace/things/{slug}/requires-action"><input type="hidden" name="csrf_token" value="{token}"><input type="hidden" name="requires_action" value="{action_value}"><button type="submit">{action_label}</button></form>
@@ -611,6 +599,31 @@ def _truthy(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _share_expiry_options_html() -> str:
+    return """
+              <option value="3600">1 hour</option>
+              <option value="86400">1 day</option>
+              <option value="604800" selected>7 days</option>
+              <option value="2592000">30 days</option>
+              <option value="custom">Custom</option>"""
+
+
+def _share_expiry_controls(*, select_style: str = "", datetime_style: str = "") -> str:
+    escaped_select_style = html.escape(select_style, quote=True)
+    escaped_datetime_style = html.escape(datetime_style, quote=True)
+    select_style_attr = f' style="{escaped_select_style}"' if escaped_select_style else ""
+    datetime_style_attr = f' style="{escaped_datetime_style}"' if escaped_datetime_style else ""
+    return f"""
+          <label>Share duration
+            <select name="expires_in" aria-label="Share duration"{select_style_attr}>{_share_expiry_options_html()}
+            </select>
+          </label>
+          <details class="custom-share-expiry">
+            <summary>Custom expiry</summary>
+            <input type="datetime-local" name="expires_at" aria-label="Custom share expiry" title="Custom share expiry in UTC"{datetime_style_attr}>
+          </details>"""
+
+
 _SHARE_EXPIRY_PRESETS = {
     "3600": (60 * 60, "1 hour"),
     "86400": (24 * 60 * 60, "1 day"),
@@ -786,15 +799,15 @@ def _artifact_share_toolbar(artifact: Artifact, csrf_token: str) -> str:
     slug = html.escape(artifact.slug, quote=True)
     token = html.escape(csrf_token, quote=True)
     title = html.escape(artifact.title or artifact.slug)
+    compact_select_style = "border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:7px 8px;background:rgba(255,255,255,.10);color:white;font:inherit;"
+    compact_datetime_style = "border:1px solid rgba(255,255,255,.18);border-radius:12px;padding:7px 8px;background:rgba(255,255,255,.10);color:white;font:inherit;"
     return f"""
-    <div id="artifactd-share-toolbar" style="position:fixed;right:16px;bottom:16px;z-index:2147483647;display:flex;gap:8px;align-items:center;padding:10px 12px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(15,23,42,.94);box-shadow:0 18px 60px rgba(0,0,0,.35);color:white;font:14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-      <span style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c4b5fd;font-weight:700;">{title}</span>
+    <div id="artifactd-share-toolbar" style="position:fixed;right:16px;bottom:16px;z-index:2147483647;display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border:1px solid rgba(255,255,255,.22);border-radius:20px;background:rgba(15,23,42,.94);box-shadow:0 18px 60px rgba(0,0,0,.35);color:white;font:14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      <span style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c4b5fd;font-weight:700;padding-top:9px;">{title}</span>
       <a href="/" style="color:white;text-decoration:none;border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:8px 10px;">Home</a>
-      <form method="post" action="/_workspace/things/{slug}/share" style="margin:0;display:flex;gap:6px;align-items:center;">
+      <form class="share-form" method="post" action="/_workspace/things/{slug}/share" style="margin:0;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;max-width:360px;">
         <input type="hidden" name="csrf_token" value="{token}">
-        <select name="expires_in" aria-label="Share duration" style="border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:7px 8px;background:rgba(255,255,255,.10);color:white;font:inherit;">
-          <option value="3600">1h</option><option value="86400">1d</option><option value="604800" selected>7d</option><option value="2592000">30d</option>
-        </select>
+        {_share_expiry_controls(select_style=compact_select_style, datetime_style=compact_datetime_style)}
         <button type="submit" style="border:0;border-radius:999px;padding:8px 12px;background:#8b5cf6;color:white;font:inherit;font-weight:800;cursor:pointer;">Share link</button>
       </form>
     </div>

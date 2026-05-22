@@ -470,6 +470,14 @@ def test_authenticated_artifact_page_exposes_admin_share_link_without_leaking_to
     assert "artifactd-share-toolbar" not in shared.text
     assert "artifactd-share-toolbar" in admin_view.text
     assert "Share link" in admin_view.text
+    assert "Share duration" in admin_view.text
+    assert '<option value="3600">1 hour</option>' in admin_view.text
+    assert '<option value="86400">1 day</option>' in admin_view.text
+    assert '<option value="604800" selected>7 days</option>' in admin_view.text
+    assert '<option value="2592000">30 days</option>' in admin_view.text
+    assert '<option value="custom">Custom</option>' in admin_view.text
+    assert "Custom expiry" in admin_view.text
+    assert 'name="expires_at"' in admin_view.text
     assert 'action="/_workspace/things/thing/share"' in admin_view.text
     assert csrf_match
 
