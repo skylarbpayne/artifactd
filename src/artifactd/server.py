@@ -335,11 +335,18 @@ def _index_page(
           a:hover {{ text-decoration: underline; }}
           .card p:not(.eyebrow) {{ min-height: 3em; color: var(--muted); line-height: 1.5; }}
           .card p.meta {{ min-height: 0; font-size: .85rem; }}
-          .workspace-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; align-items: center; }}
-          .workspace-actions form {{ margin: 0; }}
+          .sr-only {{ position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }}
+          .workspace-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; align-items: center; width: 44px; height: 44px; min-height: 44px; max-width: 100%; padding: 5px; border: 1px solid rgba(196,181,253,.28); border-radius: 999px; background: rgba(139,92,246,.12); overflow: hidden; transition: width .18s ease, height .18s ease, padding .18s ease, border-radius .18s ease, background .18s ease; }}
+          .workspace-actions:focus {{ outline: 2px solid rgba(196,181,253,.75); outline-offset: 3px; }}
+          .workspace-actions-trigger {{ display: inline-grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 999px; color: #fff; background: linear-gradient(135deg, #8b5cf6, #6366f1); font-weight: 900; line-height: 1; transition: opacity .14s ease, width .18s ease, flex-basis .18s ease; }}
+          .workspace-actions > form {{ margin: 0; opacity: 0; visibility: hidden; pointer-events: none; max-width: 0; max-height: 0; overflow: hidden; transform: translateY(2px); transition: opacity .14s ease, transform .14s ease, max-width .18s ease, max-height .18s ease; }}
+          .card:hover .workspace-actions, .card:focus-within .workspace-actions, .workspace-actions:hover, .workspace-actions:focus, .workspace-actions:focus-within {{ width: 100%; height: auto; min-height: 0; padding: 10px; border-radius: 18px; background: rgba(139,92,246,.16); overflow: visible; }}
+          .card:hover .workspace-actions-trigger, .card:focus-within .workspace-actions-trigger, .workspace-actions:hover .workspace-actions-trigger, .workspace-actions:focus .workspace-actions-trigger, .workspace-actions:focus-within .workspace-actions-trigger {{ opacity: 0; flex-basis: 0; width: 0; overflow: hidden; }}
+          .card:hover .workspace-actions > form, .card:focus-within .workspace-actions > form, .workspace-actions:hover > form, .workspace-actions:focus > form, .workspace-actions:focus-within > form {{ opacity: 1; visibility: visible; pointer-events: auto; max-width: 100%; max-height: 18rem; transform: none; overflow: visible; }}
           .workspace-actions .share-form {{ display: flex; flex: 1 1 100%; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 18px; background: rgba(139,92,246,.12); }}
           .workspace-actions .share-form label {{ display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .82rem; font-weight: 800; }}
-          .workspace-actions .share-form select, .workspace-actions .share-form input[type="datetime-local"] {{ flex: 0 1 145px; padding: 8px 10px; font-size: .88rem; }}
+          .workspace-actions .share-form select {{ flex: 0 1 145px; padding: 8px 34px 8px 12px; font-size: .88rem; appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 20 20' fill='none' stroke='%23dbeafe' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 7 5 5 5-5'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 14px; }}
+          .workspace-actions .share-form input[type="datetime-local"] {{ flex: 0 1 170px; padding: 8px 10px; font-size: .88rem; }}
           .workspace-actions .custom-share-expiry {{ flex: 1 1 100%; color: var(--muted); font-size: .82rem; }}
           .workspace-actions .custom-share-expiry summary {{ cursor: pointer; width: fit-content; }}
           .workspace-actions button {{ padding: 8px 11px; background: rgba(255,255,255,.12); border: 1px solid var(--line); font-size: .88rem; }}
@@ -385,7 +392,8 @@ def _workspace_action_forms(artifact: Artifact, csrf_token: str) -> str:
     action_value = "false" if artifact.requires_action else "true"
     action_label = "Clear action" if artifact.requires_action else "Requires action"
     return f"""
-      <div class="workspace-actions" aria-label="Workspace actions">
+      <div class="workspace-actions" aria-label="Workspace actions" tabindex="0">
+        <span class="workspace-actions-trigger" aria-hidden="true">•••</span><span class="sr-only">Workspace actions</span>
         <form class="share-form" method="post" action="/_workspace/things/{slug}/share">
           <input type="hidden" name="csrf_token" value="{token}">
           {_share_expiry_controls()}
@@ -799,29 +807,81 @@ def _artifact_share_toolbar(artifact: Artifact, csrf_token: str) -> str:
     slug = html.escape(artifact.slug, quote=True)
     token = html.escape(csrf_token, quote=True)
     title = html.escape(artifact.title or artifact.slug)
-    compact_select_style = "border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:7px 8px;background:rgba(255,255,255,.10);color:white;font:inherit;"
-    compact_datetime_style = "border:1px solid rgba(255,255,255,.18);border-radius:12px;padding:7px 8px;background:rgba(255,255,255,.10);color:white;font:inherit;"
     return f"""
     <style id="artifactd-share-toolbar-style">
       #artifactd-share-toolbar, #artifactd-share-toolbar * {{ box-sizing:border-box; }}
-      #artifactd-share-toolbar {{ max-width:calc(100vw - 24px); max-height:calc(100vh - 24px); overflow:auto; }}
-      #artifactd-share-toolbar .share-form {{ min-width:0; }}
+      #artifactd-share-toolbar {{
+        position:fixed; right:16px; bottom:16px; z-index:2147483647;
+        display:flex; align-items:center; gap:8px; flex-wrap:nowrap;
+        width:48px; height:48px; min-height:48px; max-width:calc(100vw - 24px); max-height:calc(100vh - 24px);
+        padding:7px; overflow:hidden; border:1px solid rgba(255,255,255,.20); border-radius:999px;
+        background:rgba(15,23,42,.90); backdrop-filter:blur(14px);
+        box-shadow:0 14px 44px rgba(0,0,0,.32); color:white;
+        font:14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+        transition:width .18s ease, padding .18s ease, border-radius .18s ease, background .18s ease, box-shadow .18s ease;
+      }}
+      #artifactd-share-toolbar:hover, #artifactd-share-toolbar:focus, #artifactd-share-toolbar:focus-within {{
+        width:560px; height:auto; padding:10px 12px; overflow:auto;
+        align-items:flex-start; flex-wrap:wrap; border-radius:20px; background:rgba(15,23,42,.96);
+        box-shadow:0 18px 60px rgba(0,0,0,.36);
+      }}
+      #artifactd-share-toolbar__trigger {{
+        flex:0 0 32px; width:32px; height:32px; display:grid; place-items:center;
+        border-radius:999px; background:linear-gradient(135deg,#8b5cf6,#38bdf8); color:white;
+        font-weight:900; letter-spacing:-.03em; user-select:none; transition:opacity .12s ease, transform .18s ease, width .18s ease, flex-basis .18s ease;
+      }}
+      #artifactd-share-toolbar:hover #artifactd-share-toolbar__trigger,
+      #artifactd-share-toolbar:focus #artifactd-share-toolbar__trigger,
+      #artifactd-share-toolbar:focus-within #artifactd-share-toolbar__trigger {{ opacity:0; transform:scale(.84); width:0; flex-basis:0; overflow:hidden; }}
+      #artifactd-share-toolbar .artifactd-toolbar-title,
+      #artifactd-share-toolbar .artifactd-toolbar-home,
+      #artifactd-share-toolbar .share-form {{
+        opacity:0; visibility:hidden; pointer-events:none; max-width:0; overflow:hidden;
+        transition:opacity .12s ease .06s, max-width .18s ease, visibility .12s ease;
+      }}
+      #artifactd-share-toolbar:hover .artifactd-toolbar-title,
+      #artifactd-share-toolbar:hover .artifactd-toolbar-home,
+      #artifactd-share-toolbar:hover .share-form,
+      #artifactd-share-toolbar:focus .artifactd-toolbar-title,
+      #artifactd-share-toolbar:focus .artifactd-toolbar-home,
+      #artifactd-share-toolbar:focus .share-form,
+      #artifactd-share-toolbar:focus-within .artifactd-toolbar-title,
+      #artifactd-share-toolbar:focus-within .artifactd-toolbar-home,
+      #artifactd-share-toolbar:focus-within .share-form {{ opacity:1; visibility:visible; pointer-events:auto; max-width:100%; }}
+      #artifactd-share-toolbar .artifactd-toolbar-title {{ max-width:220px; text-overflow:ellipsis; white-space:nowrap; color:#c4b5fd; font-weight:800; padding-top:9px; }}
+      #artifactd-share-toolbar .artifactd-toolbar-home {{ color:white; text-decoration:none; border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:8px 10px; }}
+      #artifactd-share-toolbar .share-form {{ margin:0; display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap; min-width:0; }}
+      #artifactd-share-toolbar:not(:hover):not(:focus):not(:focus-within) .artifactd-toolbar-title,
+      #artifactd-share-toolbar:not(:hover):not(:focus):not(:focus-within) .artifactd-toolbar-home,
+      #artifactd-share-toolbar:not(:hover):not(:focus):not(:focus-within) .share-form {{
+        width:0; height:0; max-width:0; max-height:0; padding:0; margin:0; border-width:0; overflow:hidden;
+      }}
       #artifactd-share-toolbar label {{ display:flex; align-items:center; gap:6px; min-width:0; flex:1 1 auto; }}
+      #artifactd-share-toolbar select[name="expires_in"] {{
+        border:1px solid rgba(255,255,255,.22); border-radius:999px; padding:7px 34px 7px 12px;
+        appearance:none; -webkit-appearance:none; background-color:rgba(255,255,255,.10); color:white; font:inherit;
+        background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M5 7.5 10 12.5 15 7.5' stroke='%23e5e7eb' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        background-repeat:no-repeat; background-position:right 12px center; background-size:14px;
+      }}
+      #artifactd-share-toolbar input[name="expires_at"] {{ border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:7px 8px; background:rgba(255,255,255,.10); color:white; font:inherit; }}
       #artifactd-share-toolbar .custom-share-expiry {{ flex:1 1 100%; min-width:0; color:#cbd5e1; }}
+      #artifactd-share-toolbar button[type="submit"] {{ border:0; border-radius:999px; padding:8px 12px; background:#8b5cf6; color:white; font:inherit; font-weight:800; cursor:pointer; }}
       @media (max-width: 560px) {{
-        #artifactd-share-toolbar {{ left:12px; right:12px; bottom:12px; width:auto; }}
-        #artifactd-share-toolbar > span {{ flex:1 1 100%; max-width:100%; padding-top:0; }}
+        #artifactd-share-toolbar {{ left:auto; right:12px; bottom:12px; width:44px; height:44px; min-height:44px; }}
+        #artifactd-share-toolbar:hover, #artifactd-share-toolbar:focus, #artifactd-share-toolbar:focus-within {{ left:12px; right:12px; width:auto; height:auto; }}
+        #artifactd-share-toolbar .artifactd-toolbar-title {{ flex:1 1 100%; max-width:100%; padding-top:0; }}
         #artifactd-share-toolbar .share-form {{ flex:1 1 100%; max-width:100%; }}
         #artifactd-share-toolbar button, #artifactd-share-toolbar a {{ flex:0 0 auto; }}
       }}
     </style>
-    <div id="artifactd-share-toolbar" style="position:fixed;right:16px;bottom:16px;z-index:2147483647;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;padding:10px 12px;border:1px solid rgba(255,255,255,.22);border-radius:20px;background:rgba(15,23,42,.94);box-shadow:0 18px 60px rgba(0,0,0,.35);color:white;font:14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-      <span style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c4b5fd;font-weight:700;padding-top:9px;">{title}</span>
-      <a href="/" style="color:white;text-decoration:none;border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:8px 10px;">Home</a>
-      <form class="share-form" method="post" action="/_workspace/things/{slug}/share" style="margin:0;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;max-width:360px;">
+    <div id="artifactd-share-toolbar" tabindex="0" aria-label="Artifact sharing controls">
+      <span id="artifactd-share-toolbar__trigger" aria-hidden="true">↗</span>
+      <span class="artifactd-toolbar-title">{title}</span>
+      <a class="artifactd-toolbar-home" href="/">Home</a>
+      <form class="share-form" method="post" action="/_workspace/things/{slug}/share">
         <input type="hidden" name="csrf_token" value="{token}">
-        {_share_expiry_controls(select_style=compact_select_style, datetime_style=compact_datetime_style)}
-        <button type="submit" style="border:0;border-radius:999px;padding:8px 12px;background:#8b5cf6;color:white;font:inherit;font-weight:800;cursor:pointer;">Share link</button>
+        {_share_expiry_controls()}
+        <button type="submit">Share link</button>
       </form>
     </div>
     """

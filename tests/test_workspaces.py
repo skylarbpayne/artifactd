@@ -153,6 +153,12 @@ def test_workspace_home_and_profile_session_unlock_generated_things(tmp_path: Pa
     assert unlocked_home.status_code == 200
     for label in ["Workspace Home", "Protected Thing", "Open", "Share", "Update", "Pin", "Archive", "Requires action"]:
         assert label in unlocked_home.text
+    assert "workspace-actions-trigger" in unlocked_home.text
+    assert 'aria-label="Workspace actions" tabindex="0"' in unlocked_home.text
+    assert ".card:hover .workspace-actions" in unlocked_home.text
+    assert ".workspace-actions:focus-within" in unlocked_home.text
+    assert "padding: 8px 34px 8px 12px" in unlocked_home.text
+    assert "background-position: right 12px center" in unlocked_home.text
     assert "Hermes Home" not in unlocked_home.text
     assert unlocked_thing.status_code == 200
     assert "Protected thing" in unlocked_thing.text
@@ -482,6 +488,12 @@ def test_authenticated_artifact_page_exposes_admin_share_link_without_leaking_to
     assert "max-height:calc(100vh - 24px)" in admin_view.text
     assert "overflow:auto" in admin_view.text
     assert "box-sizing:border-box" in admin_view.text
+    assert 'id="artifactd-share-toolbar__trigger"' in admin_view.text
+    assert "width:48px" in admin_view.text
+    assert "#artifactd-share-toolbar:hover" in admin_view.text
+    assert "#artifactd-share-toolbar:focus-within" in admin_view.text
+    assert "padding:7px 34px 7px 12px" in admin_view.text
+    assert "background-position:right 12px center" in admin_view.text
     assert 'action="/_workspace/things/thing/share"' in admin_view.text
     assert csrf_match
 
