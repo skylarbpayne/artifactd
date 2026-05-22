@@ -488,7 +488,7 @@ def test_workspace_home_forms_pin_share_requires_action_and_archive_with_csrf(tm
     csrf = re.search(r'name="csrf_token" value="([^"]+)"', home.text).group(1)
     pinned = client.post("/_workspace/things/thing/pin", data={"csrf_token": csrf, "pinned": "true"}, follow_redirects=False)
     actioned = client.post("/_workspace/things/thing/requires-action", data={"csrf_token": csrf, "requires_action": "true"}, follow_redirects=False)
-    share = client.post("/_workspace/things/thing/share", data={"csrf_token": csrf}, follow_redirects=False)
+    share = client.post("/_workspace/things/thing/share", data={"csrf_token": csrf, "expires_in": "86400"}, follow_redirects=False)
     token_match = re.search(r'/thing\?share=([^"<]+)', share.text)
     archived = client.post("/_workspace/things/thing/archive", data={"csrf_token": csrf}, follow_redirects=False)
 
@@ -497,16 +497,42 @@ def test_workspace_home_forms_pin_share_requires_action_and_archive_with_csrf(tm
     assert actioned.status_code == 303
     assert share.status_code == 200
     assert "Share link created" in share.text
-    assert "Share link" in home.text
+    assert "Share duration" in home.text
+    assert "data-artifactd-share-panel" in share.text
     assert "https://artifacts.example.com/thing?share=" in share.text
     assert "Copy link" in share.text
-    assert "Expires in 7 days" in share.text
+    assert "Expires in 1 day" in share.text
+    assert "Expires in 7 days" not in share.text
     assert token_match
     assert client.get(f"/thing?share={token_match.group(1)}").status_code == 200
     thing = store.get("thing")
     assert thing.pinned is True
     assert thing.requires_action is True
+    assert 0 < thing.share_token_expires_at - thing.updated_at <= 86_400
     assert archived.status_code == 303
     assert store.get("thing").status == "archived"
     audits = store.list_action_audit("thing")
     assert [audit.capability for audit in audits] == ["workspace.pin", "workspace.requires_action", "workspace.share", "workspace.archive"]
+
+
+def test_workspace_share_form_accepts_custom_expiration_datetime(tmp_path: Path):
+    source = tmp_path / "thing.html"
+    source.write_text("<h1>Thing</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "workspaces")
+    store.set_workspace_password("profile-secret")
+    store.register_thing(source, slug="thing", title="Thing")
+    client = TestClient(create_app(tmp_path / "workspaces", cookie_secret="test-secret", public_base_url="https://artifacts.example.com"))
+
+    client.post("/_workspace/login", data={"password": "profile-secret"}, follow_redirects=False)
+    home = client.get("/")
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', home.text).group(1)
+    share = client.post(
+        "/_workspace/things/thing/share",
+        data={"csrf_token": csrf, "expires_in": "custom", "expires_at": "2030-01-02T03:04:05+00:00"},
+        follow_redirects=False,
+    )
+
+    assert share.status_code == 200
+    assert "Custom expiry" in share.text
+    assert "2030-01-02 03:04 UTC" in share.text
+    assert store.get("thing").share_token_expires_at == 1_893_553_445

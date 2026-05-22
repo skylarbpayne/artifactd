@@ -21,7 +21,7 @@ The repo is currently private. To point another agent/person at it, give their G
 - Filter Things by tag(s), with text search composing with tag filters.
 - Use one workspace/master password per profile by default.
 - Save master-password UX client-side via `localStorage`; server stores password hashes only.
-- Generate randomized expiring share links; default share TTL is 7 days.
+- Generate randomized expiring share links with 1-hour, 1-day, 7-day, 30-day, and custom expiration options; default share TTL is 7 days.
 - Expose safe server-side actions only through explicit capabilities + CSRF + audit logs.
 - Install as a Hermes profile-local plugin wrapper without patching Hermes core.
 - Expose over Tailscale Serve/Funnel or Cloudflare Tunnel.
@@ -160,7 +160,7 @@ curl -o /dev/null -s -w '%{http_code}\n' https://<artifact-host>/<known-public-s
 curl -o /dev/null -s -w '%{http_code}\n' https://<artifact-host>/<known-protected-slug>
 ```
 
-Expected results for a password-protected workspace are: `/` returns `401` before login, public Things return `200`, protected Things return `401` before login. Browser-login to Workspace Home should show per-card **Share link** controls; authenticated HTML artifact pages should show the floating **Share link** toolbar; creating one should produce a full `https://.../<slug>?share=...` URL with a 7-day expiry. The toolbar must not appear for unauthenticated visitors or `?share=` recipients.
+Expected results for a password-protected workspace are: `/` returns `401` before login, public Things return `200`, protected Things return `401` before login. Browser-login to Workspace Home should show per-card **Share link** controls with duration presets/custom expiry; authenticated HTML artifact pages should show the floating **Share link** toolbar; creating one should produce a full `https://.../<slug>?share=...` URL with the selected expiry shown in the integrated share panel. The toolbar must not appear for unauthenticated visitors or `?share=` recipients.
 
 For agents/people consuming this repo, the handoff rule is: if a change matters to other consumers, commit it, push it to `origin/main`, and include these update/restart/verify steps in the handoff. Local-only fixes do not count as shipped.
 
@@ -334,7 +334,7 @@ Current Workspaces behavior:
 - generated Things default to profile/workspace auth;
 - one workspace session unlocks profile-auth Things;
 - `localStorage['artifactd.masterPassword']` is used only for browser convenience;
-- share links are random, hash-stored server-side, and expire after 7 days by default;
+- share links are random, hash-stored server-side, and expire after the selected preset/custom expiration (7 days by default);
 - tags are flexible metadata and filters, not a rigid folder hierarchy;
 - Home exposes Open, Share, Update, Pin, Requires action, Archive, tag chips, and tag facets;
 - `GET /_workspace/home` returns dashboard JSON with profile bridge/capability metadata;

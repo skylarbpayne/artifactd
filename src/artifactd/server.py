@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import html
 import os
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
@@ -138,9 +140,20 @@ def create_app(
         return RedirectResponse(url="/", status_code=303)
 
     @app.post("/_workspace/things/{slug}/share")
-    async def workspace_share(slug: str, request: Request, csrf_token: str = Form("")) -> Response:
+    async def workspace_share(
+        slug: str,
+        request: Request,
+        csrf_token: str = Form(""),
+        expires_in: str = Form("604800"),
+        expires_at: str = Form(""),
+    ) -> Response:
         _require_workspace_mutation_session(store, request, secret, csrf_token)
-        token = store.create_share_override(slug)
+        now = int(time.time())
+        try:
+            ttl_seconds, expiry_kind = _share_expiry_from_form(expires_in, expires_at, now=now)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        token = store.create_share_override(slug, ttl_seconds=ttl_seconds, now=now)
         artifact = store.get(slug)
         if not artifact:
             raise HTTPException(status_code=404, detail="artifact not found")
@@ -150,9 +163,9 @@ def create_app(
             actor="workspace-session",
             payload_hash="-",
             status="ok",
-            result_summary="share override created",
+            result_summary=f"share override created; expires_at={artifact.share_token_expires_at}",
         )
-        return _share_page(artifact, token, request, public_base_url=public_base_url)
+        return _share_page(artifact, token, request, public_base_url=public_base_url, expiry_kind=expiry_kind)
 
     @app.post("/_workspace/things/{slug}/requires-action")
     async def workspace_requires_action(slug: str, request: Request, requires_action: str = Form("true"), csrf_token: str = Form("")) -> Response:
@@ -302,7 +315,8 @@ def _index_page(
           .lede, .bridge {{ margin: 0; max-width: 42rem; color: var(--muted); font-size: 1.08rem; line-height: 1.6; }}
           .bridge {{ color: #c4b5fd; font-size: .92rem; }}
           form.search {{ display: flex; gap: 10px; max-width: 44rem; }}
-          input {{ flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 999px; padding: 14px 18px; background: rgba(255,255,255,.08); color: var(--text); font: inherit; }}
+          input, select {{ flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 999px; padding: 14px 18px; background: rgba(255,255,255,.08); color: var(--text); font: inherit; }}
+          select option {{ color: #0b0f19; }}
           button {{ border: 0; border-radius: 999px; padding: 14px 18px; background: var(--accent); color: white; font: inherit; font-weight: 700; cursor: pointer; }}
           .buckets {{ display: flex; flex-wrap: wrap; gap: 10px; }}
           .buckets a {{ border: 1px solid var(--line); border-radius: 999px; padding: 10px 14px; color: var(--text); text-decoration: none; }}
@@ -321,8 +335,11 @@ def _index_page(
           a:hover {{ text-decoration: underline; }}
           .card p:not(.eyebrow) {{ min-height: 3em; color: var(--muted); line-height: 1.5; }}
           .card p.meta {{ min-height: 0; font-size: .85rem; }}
-          .workspace-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }}
+          .workspace-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; align-items: center; }}
           .workspace-actions form {{ margin: 0; }}
+          .workspace-actions .share-form {{ display: flex; flex: 1 1 100%; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 18px; background: rgba(139,92,246,.12); }}
+          .workspace-actions .share-form label {{ display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .82rem; font-weight: 800; }}
+          .workspace-actions .share-form select, .workspace-actions .share-form input[type="datetime-local"] {{ flex: 0 1 145px; padding: 8px 10px; font-size: .88rem; }}
           .workspace-actions button {{ padding: 8px 11px; background: rgba(255,255,255,.12); border: 1px solid var(--line); font-size: .88rem; }}
           .workspace-actions button.share {{ background: var(--accent); border-color: rgba(196,181,253,.75); }}
           .workspace-actions button.danger {{ background: rgba(239,68,68,.18); }}
@@ -367,7 +384,20 @@ def _workspace_action_forms(artifact: Artifact, csrf_token: str) -> str:
     action_label = "Clear action" if artifact.requires_action else "Requires action"
     return f"""
       <div class="workspace-actions" aria-label="Workspace actions">
-        <form method="post" action="/_workspace/things/{slug}/share"><input type="hidden" name="csrf_token" value="{token}"><button class="share" type="submit">Share link</button></form>
+        <form class="share-form" method="post" action="/_workspace/things/{slug}/share">
+          <input type="hidden" name="csrf_token" value="{token}">
+          <label>Share duration
+            <select name="expires_in" aria-label="Share duration">
+              <option value="3600">1 hour</option>
+              <option value="86400">1 day</option>
+              <option value="604800" selected>7 days</option>
+              <option value="2592000">30 days</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <input type="datetime-local" name="expires_at" aria-label="Custom share expiry" title="Custom share expiry in UTC">
+          <button class="share" type="submit">Share link</button>
+        </form>
         <form method="post" action="/_workspace/things/{slug}/pin"><input type="hidden" name="csrf_token" value="{token}"><input type="hidden" name="pinned" value="{pin_value}"><button type="submit">{pin_label}</button></form>
         <form method="post" action="/_workspace/things/{slug}/requires-action"><input type="hidden" name="csrf_token" value="{token}"><input type="hidden" name="requires_action" value="{action_value}"><button type="submit">{action_label}</button></form>
         <form method="post" action="/_workspace/things/{slug}/archive"><input type="hidden" name="csrf_token" value="{token}"><button class="danger" type="submit">Archive</button></form>
@@ -576,25 +606,120 @@ def _truthy(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _share_page(artifact: Artifact, token: str, request: Request, *, public_base_url: Optional[str] = None) -> HTMLResponse:
+_SHARE_EXPIRY_PRESETS = {
+    "3600": (60 * 60, "1 hour"),
+    "86400": (24 * 60 * 60, "1 day"),
+    "604800": (7 * 24 * 60 * 60, "7 days"),
+    "2592000": (30 * 24 * 60 * 60, "30 days"),
+}
+
+
+def _share_expiry_from_form(expires_in: str, expires_at: str, *, now: int) -> tuple[int, str]:
+    selected = str(expires_in or "604800").strip().lower()
+    if selected == "custom":
+        expiry_at = _parse_custom_share_expiry(expires_at)
+        ttl_seconds = expiry_at - int(now)
+        if ttl_seconds <= 0:
+            raise ValueError("custom share expiry must be in the future")
+        return ttl_seconds, "custom"
+    if selected not in _SHARE_EXPIRY_PRESETS:
+        raise ValueError("share expiry must be one of 1h, 1d, 7d, 30d, or custom")
+    return _SHARE_EXPIRY_PRESETS[selected][0], selected
+
+
+def _parse_custom_share_expiry(value: str) -> int:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("custom share expiry requires a date/time")
+    if raw.isdigit():
+        return int(raw)
+    normalized = raw.removesuffix("Z") + ("+00:00" if raw.endswith("Z") else "")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError("custom share expiry must be ISO-8601, e.g. 2030-01-02T03:04:05+00:00") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp())
+
+
+def _share_expiry_summary(expires_at: Optional[int], *, expiry_kind: str, now: Optional[int] = None) -> tuple[str, str]:
+    if expires_at is None:
+        return "Expires when revoked", "No expiration timestamp is set."
+    exact = datetime.fromtimestamp(int(expires_at), timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    if expiry_kind == "custom":
+        return "Custom expiry", exact
+    if expiry_kind in _SHARE_EXPIRY_PRESETS:
+        return f"Expires in {_SHARE_EXPIRY_PRESETS[expiry_kind][1]}", exact
+    checked_at = int(time.time()) if now is None else int(now)
+    seconds = max(0, int(expires_at) - checked_at)
+    for unit_seconds, unit_name in ((30 * 24 * 60 * 60, "month"), (24 * 60 * 60, "day"), (60 * 60, "hour"), (60, "minute")):
+        if seconds >= unit_seconds and seconds % unit_seconds == 0:
+            count = seconds // unit_seconds
+            return f"Expires in {count} {unit_name}{'' if count == 1 else 's'}", exact
+    return f"Expires at {exact}", exact
+
+
+def _share_page(artifact: Artifact, token: str, request: Request, *, public_base_url: Optional[str] = None, expiry_kind: str = "604800") -> HTMLResponse:
     escaped_title = html.escape(artifact.title or artifact.slug)
     relative_path = f"/{artifact.slug}?share={token}"
     base_url = public_base_url or _external_base_url(request)
     share_url = f"{base_url}{relative_path}" if base_url else relative_path
     escaped_path = html.escape(share_url, quote=True)
     escaped_relative_path = html.escape(relative_path, quote=True)
+    headline, exact_expiry = _share_expiry_summary(artifact.share_token_expires_at, expiry_kind=expiry_kind, now=artifact.updated_at)
+    escaped_headline = html.escape(headline)
+    escaped_exact_expiry = html.escape(exact_expiry)
     body = f"""
     <!doctype html>
     <html lang="en">
-      <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Share · {escaped_title}</title></head>
-      <body style="font-family: system-ui, sans-serif; max-width: 42rem; margin: 12vh auto; padding: 0 1rem;">
-        <p><a href="/">← Workspace Home</a></p>
-        <h1>Share link created</h1>
-        <p>This token unlocks only <strong>{escaped_title}</strong>; the profile workspace password stays private.</p>
-        <p><strong>Expires in 7 days.</strong></p>
-        <p><input id="share-url" value="{escaped_path}" readonly style="width:100%;padding:.75rem;font:inherit;"></p>
-        <p><button type="button" onclick="navigator.clipboard && navigator.clipboard.writeText(document.getElementById('share-url').value)">Copy link</button> <a href="{escaped_path}">Open share link</a></p>
-        <p style="color:#666;font-size:.9rem;">Path: <code>{escaped_relative_path}</code></p>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Share · {escaped_title}</title>
+        <style>
+          :root {{ color-scheme: dark; --bg:#0b0f19; --panel:rgba(255,255,255,.08); --line:rgba(255,255,255,.14); --text:#eef2ff; --muted:#9aa7bd; --accent:#8b5cf6; }}
+          * {{ box-sizing:border-box; }}
+          body {{ margin:0; min-height:100vh; font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--text); background:radial-gradient(circle at top left, rgba(139,92,246,.36), transparent 34rem), var(--bg); }}
+          main {{ width:min(760px, calc(100% - 32px)); margin:0 auto; padding:72px 0; }}
+          [data-artifactd-share-panel] {{ border:1px solid var(--line); border-radius:28px; background:linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.055)); box-shadow:0 28px 90px rgba(0,0,0,.34); padding:28px; }}
+          .back, .pill {{ display:inline-flex; width:fit-content; border:1px solid var(--line); border-radius:999px; padding:9px 12px; color:var(--text); text-decoration:none; }}
+          .eyebrow {{ margin:20px 0 8px; color:#c4b5fd; text-transform:uppercase; letter-spacing:.12em; font-size:.74rem; font-weight:900; }}
+          h1 {{ margin:0; font-size:clamp(2.2rem, 7vw, 4rem); letter-spacing:-.06em; }}
+          p {{ color:var(--muted); line-height:1.55; }}
+          strong {{ color:var(--text); }}
+          .expiry {{ display:flex; flex-wrap:wrap; gap:10px; margin:18px 0; }}
+          .expiry .pill {{ background:rgba(139,92,246,.2); border-color:rgba(196,181,253,.5); color:#ede9fe; font-weight:800; }}
+          .copy-row {{ display:flex; gap:10px; margin-top:18px; }}
+          input {{ flex:1; min-width:0; border:1px solid var(--line); border-radius:16px; padding:14px 16px; background:rgba(255,255,255,.08); color:var(--text); font:inherit; }}
+          button, .button {{ border:0; border-radius:999px; padding:12px 16px; background:var(--accent); color:white; font:inherit; font-weight:800; cursor:pointer; text-decoration:none; }}
+          code {{ color:#c4b5fd; overflow-wrap:anywhere; }}
+          .actions {{ display:flex; flex-wrap:wrap; gap:10px; margin-top:18px; }}
+          .fine {{ font-size:.9rem; }}
+        </style>
+      </head>
+      <body>
+        <main>
+          <section data-artifactd-share-panel>
+            <a class="back" href="/">← Workspace Home</a>
+            <p class="eyebrow">artifactd share</p>
+            <h1>Share link created</h1>
+            <p>This link unlocks only <strong>{escaped_title}</strong>. The workspace password stays private.</p>
+            <div class="expiry" aria-label="Share expiry">
+              <span class="pill">{escaped_headline}</span>
+              <span class="pill">{escaped_exact_expiry}</span>
+            </div>
+            <div class="copy-row">
+              <input id="share-url" value="{escaped_path}" readonly aria-label="Share URL">
+              <button type="button" onclick="navigator.clipboard && navigator.clipboard.writeText(document.getElementById('share-url').value)">Copy link</button>
+            </div>
+            <div class="actions">
+              <a class="button" href="{escaped_path}">Open share link</a>
+              <a class="back" href="/{html.escape(artifact.slug, quote=True)}">Back to thing</a>
+            </div>
+            <p class="fine">Path: <code>{escaped_relative_path}</code></p>
+          </section>
+        </main>
       </body>
     </html>
     """
@@ -660,8 +785,11 @@ def _artifact_share_toolbar(artifact: Artifact, csrf_token: str) -> str:
     <div id="artifactd-share-toolbar" style="position:fixed;right:16px;bottom:16px;z-index:2147483647;display:flex;gap:8px;align-items:center;padding:10px 12px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(15,23,42,.94);box-shadow:0 18px 60px rgba(0,0,0,.35);color:white;font:14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
       <span style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c4b5fd;font-weight:700;">{title}</span>
       <a href="/" style="color:white;text-decoration:none;border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:8px 10px;">Home</a>
-      <form method="post" action="/_workspace/things/{slug}/share" style="margin:0;">
+      <form method="post" action="/_workspace/things/{slug}/share" style="margin:0;display:flex;gap:6px;align-items:center;">
         <input type="hidden" name="csrf_token" value="{token}">
+        <select name="expires_in" aria-label="Share duration" style="border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:7px 8px;background:rgba(255,255,255,.10);color:white;font:inherit;">
+          <option value="3600">1h</option><option value="86400">1d</option><option value="604800" selected>7d</option><option value="2592000">30d</option>
+        </select>
         <button type="submit" style="border:0;border-radius:999px;padding:8px 12px;background:#8b5cf6;color:white;font:inherit;font-weight:800;cursor:pointer;">Share link</button>
       </form>
     </div>

@@ -345,15 +345,26 @@ class ArtifactStore:
                 counts[tag] = counts.get(tag, 0) + 1
         return dict(sorted(counts.items()))
 
-    def create_share_override(self, slug: str, *, token: Optional[str] = None, ttl_seconds: int = 7 * 24 * 60 * 60, now: Optional[int] = None) -> str:
+    def create_share_override(
+        self,
+        slug: str,
+        *,
+        token: Optional[str] = None,
+        ttl_seconds: int = 7 * 24 * 60 * 60,
+        expires_at: Optional[int] = None,
+        now: Optional[int] = None,
+    ) -> str:
         artifact = self._require(slug)
         created_at = int(time.time()) if now is None else int(now)
+        expiry = int(expires_at) if expires_at is not None else created_at + int(ttl_seconds)
+        if expiry <= created_at:
+            raise ValueError("share link expiry must be in the future")
         raw_token = token or secrets.token_urlsafe(24)
         updated = self._copy_artifact(
             artifact,
             updated_at=created_at,
             share_token_hash=hash_password(raw_token),
-            share_token_expires_at=created_at + int(ttl_seconds),
+            share_token_expires_at=expiry,
         )
         self._upsert(updated)
         return raw_token
