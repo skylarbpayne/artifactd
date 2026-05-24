@@ -7,6 +7,8 @@ from agent_health_dashboard import (
     Check,
     artifactd_status_from_codes,
     codex_auth_summary,
+    extract_markdown_items,
+    kanban_readiness_summary,
     latest_release_summary,
     openchronicle_index_summary,
     parse_cron_list_output,
@@ -73,10 +75,96 @@ def test_render_html_includes_ops_console_language():
     )
 
     assert "ops console" in html.lower()
+    assert "morning rounds" in html.lower()
     assert "Runtime processes" in html
     assert "Codex" in html
     assert "OpenChronicle/entity graph" in html
     assert "compaction/memory/Hindsight" in html
+
+
+def test_render_html_includes_morning_rounds_recommendation_when_supplied():
+    html = render_html(
+        [
+            Check(
+                id="kanban",
+                agent="Palmer",
+                app="Hermes Kanban",
+                account="shared board",
+                operation="stats",
+                status="ok",
+                summary="Kanban reachable",
+            )
+        ],
+        "2026-05-24 07:30 PDT",
+        {
+            "gate_rollups": {"system": "ok", "truth": "warn", "priority": "ok", "execution": "ok"},
+            "recommendation": "Do a truth-refresh pass first.",
+            "first_90_minutes": "Refresh the active ledger.",
+            "items": [
+                {"gate": "truth", "status": "warn", "title": "Active work ledger", "summary": "A little stale", "evidence": "ledger.md", "next_action": "Refresh it", "owner": "Palmer"}
+            ],
+            "kanban": {"executable": [{"id": "t_ready", "title": "Ready task", "status": "ready", "age_hours": 1.0}], "blocked_context": [], "approval_needed": [], "stale": []},
+            "priority_now": [],
+            "palmer_safe": [],
+        },
+    )
+
+    assert "Morning recommendation" in html
+    assert "Do a truth-refresh pass first." in html
+    assert "Executable now" in html
+    assert "t_ready" in html
+
+
+def test_kanban_readiness_summary_detects_executable_context_gaps_and_approvals(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "kanban.db"
+    now = 1_800_000_000
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            create table tasks (
+                id text primary key,
+                title text,
+                body text,
+                assignee text,
+                status text,
+                priority integer,
+                created_at integer,
+                started_at integer,
+                last_heartbeat_at integer
+            )
+            """
+        )
+        conn.executemany(
+            "insert into tasks values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("t_ready", "Build useful thing", "Acceptance criteria and paths are explicit. " * 8, "palmer", "ready", 0, now - 3600, None, None),
+                ("t_thin", "Thin task", "tbd", "palmer", "ready", 0, now - 3600, None, None),
+                ("t_approval", "Skylar: approve send", "Needs approval before external send. " * 8, "skylar", "blocked", 0, now - 100 * 3600, None, None),
+            ],
+        )
+
+    summary = kanban_readiness_summary(db, now_ts=now)
+
+    assert summary["counts"] == {"ready": 2, "blocked": 1}
+    assert [task["id"] for task in summary["executable"]] == ["t_ready"]
+    assert [task["id"] for task in summary["blocked_context"]] == ["t_thin"]
+    assert [task["id"] for task in summary["approval_needed"]] == ["t_approval"]
+    assert summary["stale"][0]["id"] == "t_approval"
+
+
+def test_extract_markdown_items_reads_named_section(tmp_path):
+    note = tmp_path / "current-priorities.md"
+    note.write_text("""# Current Priorities
+## Now
+- **HTV** — lock print path.
+- [[Wonderly]] — proof packet.
+## Later
+- Not this.
+""", encoding="utf-8")
+
+    assert extract_markdown_items(note, "Now") == ["**HTV** — lock print path.", "Wonderly — proof packet."]
 
 
 def test_artifactd_status_accepts_protected_routes_as_healthy_without_old_smoke_slug():

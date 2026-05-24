@@ -50,6 +50,20 @@ class Check:
     seconds: float = 0.0
 
 
+@dataclass
+class MorningItem:
+    gate: str
+    status: str
+    title: str
+    summary: str
+    evidence: str = ""
+    next_action: str = ""
+    owner: str = "Palmer"
+
+
+MORNING_GATES = ["system", "truth", "priority", "execution"]
+
+
 def load_profile_env(profile: pathlib.Path) -> dict[str, str]:
     env = os.environ.copy()
     env.update(
@@ -444,6 +458,258 @@ def skyvault_entity_summary(root: pathlib.Path) -> dict[str, Any]:
     status = "ok" if notes and summary.exists() else "warn"
     evidence = f"people_entity_notes={len(notes)}; crm_summary={'present' if summary.exists() else 'missing'}"
     return {"status": status, "evidence": evidence}
+
+
+def status_rollup(statuses: list[str]) -> str:
+    if "fail" in statuses:
+        return "fail"
+    if "warn" in statuses:
+        return "warn"
+    if statuses:
+        return "ok"
+    return "unknown"
+
+
+def age_hours_from_timestamp(value: int | float | None, now_ts: float | None = None) -> float | None:
+    if not value:
+        return None
+    now_ts = now_ts or time.time()
+    return round(max(0.0, now_ts - float(value)) / 3600, 1)
+
+
+def age_label(hours: float | None) -> str:
+    if hours is None:
+        return "unknown age"
+    if hours < 1:
+        return f"{round(hours * 60)}m old"
+    if hours < 48:
+        return f"{hours:.1f}h old"
+    return f"{hours / 24:.1f}d old"
+
+
+def note_updated_age_hours(path: pathlib.Path, now: datetime | None = None) -> float | None:
+    now = now or datetime.now(ZoneInfo("America/Los_Angeles"))
+    try:
+        text = path.read_text(errors="ignore")[:1200]
+    except OSError:
+        return None
+    match = re.search(r"(?m)^updated:\s*(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})", text)
+    if match:
+        try:
+            updated = datetime.strptime(" ".join(match.groups()), "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("America/Los_Angeles"))
+            return round((now - updated).total_seconds() / 3600, 1)
+        except ValueError:
+            pass
+    try:
+        return round((now.timestamp() - path.stat().st_mtime) / 3600, 1)
+    except OSError:
+        return None
+
+
+def note_freshness_item(path: pathlib.Path, title: str, gate: str, warn_hours: int = 36, fail_hours: int = 96) -> MorningItem:
+    if not path.exists():
+        return MorningItem(gate=gate, status="fail", title=title, summary="Canonical note is missing", evidence=str(path), next_action="Restore or recreate this note before relying on morning priorities.")
+    hours = note_updated_age_hours(path)
+    if hours is None:
+        status = "warn"
+        summary = "Freshness could not be determined"
+    elif hours > fail_hours:
+        status = "fail"
+        summary = f"Canonical note is stale ({age_label(hours)})"
+    elif hours > warn_hours:
+        status = "warn"
+        summary = f"Canonical note should be refreshed ({age_label(hours)})"
+    else:
+        status = "ok"
+        summary = f"Canonical note is fresh enough ({age_label(hours)})"
+    return MorningItem(gate=gate, status=status, title=title, summary=summary, evidence=str(path), next_action="Refresh the note from Kanban, calendar, and recent receipts." if status != "ok" else "Use this note as morning context.")
+
+
+def extract_markdown_items(path: pathlib.Path, heading: str, limit: int = 4) -> list[str]:
+    try:
+        lines = path.read_text(errors="ignore").splitlines()
+    except OSError:
+        return []
+    items: list[str] = []
+    in_section = False
+    wanted = heading.strip().lower()
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            in_section = stripped.lstrip("# ").strip().lower() == wanted
+            continue
+        if in_section and stripped.startswith("#"):
+            break
+        if in_section and stripped.startswith("- "):
+            item = re.sub(r"\[\[([^\]]+)\]\]", r"\1", stripped[2:])
+            items.append(redact(item, 220))
+            if len(items) >= limit:
+                break
+    return items
+
+
+def is_task_context_sufficient(row: sqlite3.Row | dict[str, Any]) -> bool:
+    body = (row["body"] or "") if isinstance(row, sqlite3.Row) else (row.get("body") or "")
+    title = row["title"] if isinstance(row, sqlite3.Row) else row.get("title", "")
+    text = f"{title}\n{body}".lower()
+    if len(body.strip()) < 180:
+        return False
+    vague_markers = ["tbd", "todo: fill", "needs context", "missing context", "unclear", "figure out what this means"]
+    return not any(marker in text for marker in vague_markers)
+
+
+def kanban_readiness_summary(db_path: pathlib.Path = pathlib.Path("/Users/skylarpayne/.hermes/kanban.db"), now_ts: float | None = None) -> dict[str, Any]:
+    now_ts = now_ts or time.time()
+    if not db_path.exists():
+        return {"status": "fail", "evidence": f"Kanban DB missing at {db_path}", "counts": {}, "executable": [], "blocked_context": [], "approval_needed": [], "stale": []}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                select id, title, body, assignee, status, priority, created_at, started_at, last_heartbeat_at
+                from tasks
+                where status not in ('done', 'archived')
+                order by priority desc, created_at desc
+                """
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return {"status": "fail", "evidence": f"Kanban DB query failed: {redact(str(exc))}", "counts": {}, "executable": [], "blocked_context": [], "approval_needed": [], "stale": []}
+
+    counts: dict[str, int] = {}
+    executable: list[dict[str, Any]] = []
+    blocked_context: list[dict[str, Any]] = []
+    approval_needed: list[dict[str, Any]] = []
+    stale: list[dict[str, Any]] = []
+
+    for row in rows:
+        counts[row["status"]] = counts.get(row["status"], 0) + 1
+        body = row["body"] or ""
+        title = row["title"] or ""
+        text = f"{title}\n{body}".lower()
+        age = age_hours_from_timestamp(row["last_heartbeat_at"] or row["started_at"] or row["created_at"], now_ts)
+        task_ref = {"id": row["id"], "title": title, "assignee": row["assignee"], "status": row["status"], "age_hours": age}
+
+        if row["status"] == "running" and age is not None and age > 4:
+            stale.append({**task_ref, "reason": "running without a fresh heartbeat"})
+        elif row["status"] in {"ready", "todo", "triage", "blocked"} and age is not None and age > 72:
+            stale.append({**task_ref, "reason": "active task has not moved in 72h"})
+
+        if row["assignee"] == "palmer" and row["status"] in {"ready", "running"}:
+            if is_task_context_sufficient(row):
+                executable.append(task_ref)
+            else:
+                blocked_context.append({**task_ref, "reason": "body is too thin or vague for autonomous execution"})
+        elif row["assignee"] == "palmer" and row["status"] in {"todo", "triage"} and not is_task_context_sufficient(row):
+            blocked_context.append({**task_ref, "reason": "not ready and context is insufficient"})
+
+        if row["status"] == "blocked" or any(marker in text for marker in ["approve", "approval", "decide", "send", "purchase", "payment", "calendar", "credential", "auth", "review-required"]):
+            if row["assignee"] in {"skylar", "palmer", None}:
+                approval_needed.append(task_ref)
+
+    active_total = sum(counts.values())
+    status = "fail" if not active_total else "warn" if stale or blocked_context else "ok"
+    evidence = "statuses: " + ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
+    return {
+        "status": status,
+        "evidence": evidence,
+        "counts": counts,
+        "executable": executable[:8],
+        "blocked_context": blocked_context[:8],
+        "approval_needed": approval_needed[:8],
+        "stale": stale[:10],
+    }
+
+
+def _task_line(task: dict[str, Any]) -> str:
+    age = age_label(task.get("age_hours")) if task.get("age_hours") is not None else "unknown age"
+    return f"{task.get('id')} — {task.get('title')} ({task.get('status')}, {age})"
+
+
+def collect_morning_rounds(checks: list[Check], generated_at: str) -> dict[str, Any]:
+    health = rollup(checks)
+    failing = [c for c in checks if c.status in {"fail", "warn"}]
+    current_priorities = SKYVAULT / "Palmer/projects/current-priorities.md"
+    active_ledger = SKYVAULT / "Palmer/projects/active-work-ledger.md"
+    kanban = kanban_readiness_summary()
+
+    items: list[MorningItem] = [
+        MorningItem(
+            gate="system",
+            status=health["overall"],
+            title="Base agent functionality/auth",
+            summary=f"{health['label']}: {health['counts'].get('ok', 0)} ok / {health['counts'].get('warn', 0)} warn / {health['counts'].get('fail', 0)} fail",
+            evidence="; ".join(f"{c.agent}/{c.app}:{c.status}" for c in failing[:6]) or "No failing health checks in this snapshot.",
+            next_action="Repair the first failing check before assigning work that depends on it." if failing else "Safe to use agent-health as substrate for morning rounds.",
+        ),
+        note_freshness_item(current_priorities, "Current priorities note", "priority"),
+        note_freshness_item(active_ledger, "Active work ledger", "truth"),
+        MorningItem(
+            gate="truth",
+            status=kanban["status"],
+            title="Kanban execution truth",
+            summary=f"Kanban reachable with {sum(kanban.get('counts', {}).values())} active rows; {len(kanban['stale'])} stale, {len(kanban['blocked_context'])} context-thin.",
+            evidence=kanban["evidence"],
+            next_action="Refresh stale/ambiguous task rows before treating the queue as reliable." if kanban["status"] != "ok" else "Use Kanban as execution queue.",
+        ),
+        MorningItem(
+            gate="execution",
+            status="ok" if kanban["executable"] else "warn",
+            title="Executable-now Palmer queue",
+            summary=f"{len(kanban['executable'])} Palmer task(s) look executable from their current context.",
+            evidence="; ".join(_task_line(t) for t in kanban["executable"][:4]) or "No ready/running Palmer task has enough context in the current snapshot.",
+            next_action="Start the top executable Palmer task." if kanban["executable"] else "Write missing repo/path/acceptance criteria into the highest-value Palmer task before dispatch.",
+        ),
+        MorningItem(
+            gate="execution",
+            status="warn" if kanban["approval_needed"] else "ok",
+            title="Approval-needed / Skylar-only queue",
+            summary=f"{len(kanban['approval_needed'])} active task(s) appear to need Skylar approval, decision, auth, send, purchase, payment, or scheduling action.",
+            evidence="; ".join(_task_line(t) for t in kanban["approval_needed"][:4]) or "No obvious approval queue from active Kanban rows.",
+            next_action="Batch these into one morning decision ask; do not leak them into agent busywork." if kanban["approval_needed"] else "No approval batch needed from this snapshot.",
+        ),
+    ]
+
+    now_items = extract_markdown_items(current_priorities, "Now", 3)
+    palmer_safe = extract_markdown_items(current_priorities, "Palmer-owned / Palmer-safe", 3)
+    priority_status = "ok" if now_items else "warn"
+    items.append(
+        MorningItem(
+            gate="priority",
+            status=priority_status,
+            title="Priority synthesis source",
+            summary="Top current priorities are extractable from Skyvault." if now_items else "No parseable 'Now' priorities found.",
+            evidence=" | ".join(now_items) if now_items else str(current_priorities),
+            next_action="Use the first current-priorities lane as the morning operating frame." if now_items else "Refresh current-priorities.md before making a morning call.",
+        )
+    )
+
+    gate_rollups = {
+        gate: status_rollup([item.status for item in items if item.gate == gate])
+        for gate in MORNING_GATES
+    }
+    if health["overall"] == "fail":
+        recommendation = "Repair base agent/auth failures first; morning execution is unreliable until the substrate is back."
+    elif gate_rollups["truth"] in {"fail", "warn"}:
+        recommendation = "Do a truth-refresh pass first: active ledger + stale Kanban rows, then pick work."
+    elif kanban["executable"]:
+        recommendation = f"Start with {_task_line(kanban['executable'][0])}. Palmer can move this without Skylar if no external approval appears."
+    elif kanban["approval_needed"]:
+        recommendation = "Batch the approval-needed queue into one decision ask for Skylar; do not start fake setup work."
+    else:
+        recommendation = "Priority context is present but no executable Palmer task surfaced; convert the top priority into a concrete Kanban task."
+
+    first_90 = palmer_safe[0] if palmer_safe else recommendation
+    return {
+        "generated_at": generated_at,
+        "gate_rollups": gate_rollups,
+        "recommendation": recommendation,
+        "first_90_minutes": first_90,
+        "items": [asdict(item) for item in items],
+        "kanban": kanban,
+        "priority_now": now_items,
+        "palmer_safe": palmer_safe,
+    }
 
 
 def add_check(checks: list[Check], **kwargs: Any) -> None:
@@ -924,8 +1190,17 @@ def esc(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
 
-def render_html(checks: list[Check], generated_at: str) -> str:
+def render_html(checks: list[Check], generated_at: str, morning: dict[str, Any] | None = None) -> str:
     summary = rollup(checks)
+    morning = morning or {
+        "gate_rollups": {},
+        "recommendation": "Morning rounds readiness was not collected for this render.",
+        "first_90_minutes": "Collect morning-rounds inputs, then rerender.",
+        "items": [],
+        "kanban": {"executable": [], "blocked_context": [], "approval_needed": [], "stale": []},
+        "priority_now": [],
+        "palmer_safe": [],
+    }
     by_agent: dict[str, list[Check]] = {}
     for check in sorted(checks, key=lambda c: (c.agent, STATUS_ORDER.get(c.status, 9), c.app, c.account)):
         by_agent.setdefault(check.agent, []).append(check)
@@ -967,14 +1242,43 @@ def render_html(checks: list[Check], generated_at: str) -> str:
         for c in failing
     ) or "<li>Nothing currently broken. Weirdly peaceful.</li>"
 
-    json_blob = esc(json.dumps({"generated_at": generated_at, "summary": summary, "checks": [asdict(c) for c in checks]}, indent=2))
+    def morning_card(item: dict[str, Any]) -> str:
+        return f"""
+        <article class="morning-item {esc(item.get('status', 'unknown'))}">
+          <div class="check-head"><strong>{esc(item.get('title', 'Untitled'))}</strong>{badge(item.get('status', 'unknown'))}</div>
+          <div class="summary">{esc(item.get('summary', ''))}</div>
+          <p class="evidence">{esc(item.get('evidence', ''))}</p>
+          <p><strong>Next:</strong> {esc(item.get('next_action', ''))}</p>
+        </article>
+        """
+
+    gate_cards = "".join(
+        f"<div class=\"gate {esc(morning.get('gate_rollups', {}).get(gate, 'unknown'))}\"><span>{esc(gate)}</span>{badge(morning.get('gate_rollups', {}).get(gate, 'unknown'))}</div>"
+        for gate in MORNING_GATES
+    )
+    morning_items = "".join(morning_card(item) for item in morning.get("items", [])) or "<p class=\"muted\">Morning readiness details were not collected.</p>"
+
+    def task_queue(title: str, tasks: list[dict[str, Any]], empty: str) -> str:
+        rows = "".join(f"<li>{esc(_task_line(task))}</li>" for task in tasks) or f"<li>{esc(empty)}</li>"
+        return f"<article class=\"panel queue\"><h3>{esc(title)}</h3><ul>{rows}</ul></article>"
+
+    kanban_queues = "".join(
+        [
+            task_queue("Executable now", morning.get("kanban", {}).get("executable", []), "No executable Palmer task surfaced."),
+            task_queue("Blocked by context", morning.get("kanban", {}).get("blocked_context", []), "No context-thin Palmer task surfaced."),
+            task_queue("Approval needed", morning.get("kanban", {}).get("approval_needed", []), "No approval batch surfaced."),
+            task_queue("Stale truth", morning.get("kanban", {}).get("stale", []), "No stale active task surfaced."),
+        ]
+    )
+
+    json_blob = esc(json.dumps({"generated_at": generated_at, "summary": summary, "morning_rounds": morning, "checks": [asdict(c) for c in checks]}, indent=2))
 
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Palmer / Echo Ops Console</title>
+  <title>Morning Rounds / Palmer + Echo Ops Console</title>
   <style>
     :root {{
       color-scheme: dark;
@@ -1016,20 +1320,31 @@ def render_html(checks: list[Check], generated_at: str) -> str:
     summary {{ cursor: pointer; color: #bae6fd; font-weight: 700; }}
     pre {{ white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(2,6,23,.85); border: 1px solid var(--line); border-radius: 14px; padding: 12px; color: #d1fae5; font-size: 12px; line-height: 1.45; }}
     .playbook {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 22px; }}
+    .morning {{ margin-top: 22px; }}
+    .gates {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }}
+    .gate {{ display: flex; justify-content: space-between; align-items: center; gap: 8px; background: rgba(15,23,42,.85); border: 1px solid var(--line); border-top: 4px solid var(--unknown); border-radius: 16px; padding: 12px; text-transform: uppercase; letter-spacing: .08em; font-size: 12px; color: var(--muted); }}
+    .gate.ok {{ border-top-color: var(--ok); }} .gate.warn {{ border-top-color: var(--warn); }} .gate.fail {{ border-top-color: var(--fail); }}
+    .recommendation {{ border-color: rgba(56,189,248,.5); background: linear-gradient(180deg, rgba(14,116,144,.22), rgba(15,23,42,.94)); }}
+    .morning-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }}
+    .morning-item {{ background: rgba(15,23,42,.88); border: 1px solid var(--line); border-left: 5px solid var(--unknown); border-radius: 18px; padding: 16px; }}
+    .morning-item.ok {{ border-left-color: var(--ok); }} .morning-item.warn {{ border-left-color: var(--warn); }} .morning-item.fail {{ border-left-color: var(--fail); }}
+    .queues {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }}
+    .queue ul {{ padding-left: 18px; }}
+    .queue li {{ margin: 8px 0; color: var(--muted); font-size: 13px; }}
     .playbook li {{ margin: 8px 0; color: var(--muted); }}
     .incident li {{ margin: 9px 0; color: var(--muted); }}
     .footer {{ margin-top: 22px; color: var(--muted); font-size: 13px; }}
-    @media (max-width: 850px) {{ .hero, .checks, .playbook {{ grid-template-columns: 1fr; }} .counts {{ grid-template-columns: repeat(2,1fr); }} }}
+    @media (max-width: 850px) {{ .hero, .checks, .playbook, .morning-grid, .queues {{ grid-template-columns: 1fr; }} .counts, .gates {{ grid-template-columns: repeat(2,1fr); }} }}
   </style>
 </head>
 <body>
   <header>
     <div class="topline">{badge(summary['overall'])}<span class="muted">Generated {esc(generated_at)}</span><span class="muted">Protected artifact: /{ARTIFACT_SLUG}</span></div>
-    <h1>Palmer / Echo<br/>ops console</h1>
+    <h1>Morning rounds<br/>readiness cockpit</h1>
     <div class="hero">
       <section class="panel">
         <div class="status-big">{status_dot(summary['overall'])}{esc(summary['label'])}</div>
-        <p>This is the boring ops console we actually need: live smoke tests by profile, app, account, runtime process, storage pressure, Hermes update state, compaction/memory/Hindsight, skills feedback, OpenChronicle/entity graph, and artifactd surfaces. The goal is to avoid the dumb failure mode where one Gmail token expires and we nuke every integration from orbit.</p>
+        <p>This is agent-health growing up into morning rounds: base auth/functionality, project/task truth freshness, priority context, and task-level execution context. The job is not pretty lights; it is deciding what Palmer/Echo can actually do before Skylar starts the day.</p>
         <div class="counts">
           <div class="count"><b>{summary['counts'].get('ok', 0)}</b><span>ok</span></div>
           <div class="count"><b>{summary['counts'].get('warn', 0)}</b><span>warn</span></div>
@@ -1044,6 +1359,17 @@ def render_html(checks: list[Check], generated_at: str) -> str:
     </div>
   </header>
   <main>
+    <section class="morning">
+      <article class="panel recommendation">
+        <h2>Morning recommendation</h2>
+        <p class="summary">{esc(morning.get('recommendation', ''))}</p>
+        <p><strong>First 90 minutes:</strong> {esc(morning.get('first_90_minutes', ''))}</p>
+        <div class="gates">{gate_cards}</div>
+      </article>
+      <div class="morning-grid">{morning_items}</div>
+      <div class="queues">{kanban_queues}</div>
+    </section>
+
     {grouped}
 
     <section class="playbook">
@@ -1053,7 +1379,7 @@ def render_html(checks: list[Check], generated_at: str) -> str:
           <li>Hermes updates/releases: CLI version plus local checkout vs origin.</li>
           <li>Host risk: storage pressure, runtime process inventory, cron, recent logs, Codex auth.</li>
           <li>Agent substrate: gog/Google, Outlook, Asana, Canva, GitHub, Kanban, Palmer/Echo artifactd.</li>
-          <li>Knowledge layer: compaction config, Hindsight memory, skill feedback/patch usage, OpenChronicle export, Skyvault entity notes.</li>
+          <li>Knowledge layer: compaction/memory/Hindsight config, skill feedback/patch usage, OpenChronicle/entity graph export, Skyvault entity notes.</li>
         </ul>
       </article>
       <article class="panel">
@@ -1079,7 +1405,7 @@ def render_html(checks: list[Check], generated_at: str) -> str:
         <pre>cd /Users/skylarpayne/artifactd
 . .venv/bin/activate
 python scripts/agent_health_dashboard.py --out dist/agent-health
-python -c 'from pathlib import Path; from artifactd.store import ArtifactStore; ArtifactStore("/Users/skylarpayne/.hermes/artifacts").deploy(Path("dist/agent-health"), slug="agent-health", title="Palmer / Echo ops console", description="Protected dashboard with live smoke-test status for Palmer/Echo connectivity, runtime processes, Codex auth, storage, Hermes updates, compaction/memory/Hindsight, skill feedback, OpenChronicle/entity graph, and artifactd surfaces.", tags=["ops", "health", "palmer", "echo"], pinned=True, auth_mode="profile")'</pre>
+python -c 'from pathlib import Path; from artifactd.store import ArtifactStore; ArtifactStore("/Users/skylarpayne/.hermes/artifacts").deploy(Path("dist/agent-health"), slug="agent-health", title="Morning Rounds readiness cockpit", description="Protected morning readiness cockpit layered on agent-health: system/auth checks, truth freshness, priority synthesis, execution-context sufficiency, and recommended first move.", tags=["ops", "health", "morning-rounds", "palmer", "echo"], pinned=True, auth_mode="profile")'</pre>
       </article>
     </section>
 
@@ -1095,10 +1421,11 @@ python -c 'from pathlib import Path; from artifactd.store import ArtifactStore; 
 
 
 def write_outputs(checks: list[Check], out_dir: pathlib.Path, generated_at: str) -> None:
+    morning = collect_morning_rounds(checks, generated_at)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "index.html").write_text(render_html(checks, generated_at), encoding="utf-8")
+    (out_dir / "index.html").write_text(render_html(checks, generated_at, morning), encoding="utf-8")
     (out_dir / "health.json").write_text(
-        json.dumps({"generated_at": generated_at, "summary": rollup(checks), "checks": [asdict(c) for c in checks]}, indent=2),
+        json.dumps({"generated_at": generated_at, "summary": rollup(checks), "morning_rounds": morning, "checks": [asdict(c) for c in checks]}, indent=2),
         encoding="utf-8",
     )
 
