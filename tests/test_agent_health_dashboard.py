@@ -6,9 +6,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from agent_health_dashboard import (
     Check,
     codex_auth_summary,
+    latest_release_summary,
+    openchronicle_index_summary,
     parse_cron_list_output,
+    parse_df_output,
+    parse_memory_config,
     process_inventory,
     render_html,
+    skill_usage_summary,
     summarize_recent_log_errors,
 )
 
@@ -38,12 +43,13 @@ def test_process_inventory_groups_agent_runtime_processes_without_leaking_full_c
 def test_codex_auth_summary_reports_presence_without_token_contents(tmp_path):
     auth_file = tmp_path / ".codex" / "auth.json"
     auth_file.parent.mkdir()
-    auth_file.write_text('{"OPENAI_API_KEY":"sk-secret", "tokens":"do-not-show"}', encoding="utf-8")
+    auth_file.write_text('{"auth_mode":"chatgpt", "last_refresh":"2099-05-24T15:59:37Z", "OPENAI_API_KEY":"sk-secret", "tokens":"do-not-show"}', encoding="utf-8")
 
     summary = codex_auth_summary(tmp_path)
 
     assert summary["status"] == "ok"
-    assert summary["evidence"] == "Codex auth file exists and is non-empty"
+    assert "auth_mode=chatgpt" in summary["evidence"]
+    assert "last_refresh=present" in summary["evidence"]
     assert "secret" not in str(summary)
     assert "do-not-show" not in str(summary)
 
@@ -68,6 +74,8 @@ def test_render_html_includes_ops_console_language():
     assert "ops console" in html.lower()
     assert "Runtime processes" in html
     assert "Codex" in html
+    assert "OpenChronicle/entity graph" in html
+    assert "compaction/memory/Hindsight" in html
 
 
 def test_parse_cron_list_output_counts_active_paused_and_failed_runs():
@@ -110,3 +118,81 @@ def test_summarize_recent_log_errors_redacts_and_limits(tmp_path):
     assert summary["files_checked"] == 1
     assert "Bearer REDACTED" in summary["samples"][0]
     assert "secret-token-value" not in str(summary)
+
+
+def test_parse_df_output_reports_free_space_percentages():
+    parsed = parse_df_output("""Filesystem 1024-blocks Used Available Capacity Mounted on
+/dev/disk3s1 100000000 60000000 40000000 60% /System/Volumes/Data
+""")
+
+    assert parsed["available_gb"] == 38.1
+    assert parsed["free_percent"] == 40.0
+    assert parsed["used_percent"] == 60.0
+
+
+def test_parse_memory_config_extracts_hindsight_and_compaction_settings():
+    config = """
+memory:
+  provider: hindsight
+  memory_enabled: true
+  user_profile_enabled: true
+context:
+  engine: compressor
+"""
+
+    parsed = parse_memory_config(config)
+
+    assert parsed == {
+        "provider": "hindsight",
+        "memory_enabled": "true",
+        "user_profile_enabled": "true",
+        "context_engine": "compressor",
+    }
+
+
+def test_skill_usage_summary_surfaces_top_usage_and_feedback_patches(tmp_path):
+    usage = tmp_path / ".usage.json"
+    usage.write_text(
+        '{"artifact-deployment":{"state":"active","use_count":7,"patch_count":1},"codex":{"state":"active","use_count":3}}',
+        encoding="utf-8",
+    )
+
+    summary = skill_usage_summary(usage)
+
+    assert summary["status"] == "ok"
+    assert "active=2" in summary["evidence"]
+    assert "patched_for_feedback=1" in summary["evidence"]
+    assert "artifact-deployment(7)" in summary["evidence"]
+
+
+def test_latest_release_summary_counts_openchronicle_manifest(tmp_path):
+    release = tmp_path / "releases" / "2026-05-24T15-59-37Z_abc"
+    release.mkdir(parents=True)
+    release.joinpath("manifest.json").write_text(
+        '{"created_at":"2099-05-24T15:59:37Z","capture_files":12,"memory_files":2,"contains":["capture_json","sqlite_backup"]}',
+        encoding="utf-8",
+    )
+
+    summary = latest_release_summary(tmp_path)
+
+    assert summary["status"] == "ok"
+    assert "captures=12" in summary["evidence"]
+    assert "sqlite_backup=True" in summary["evidence"]
+
+
+def test_openchronicle_index_summary_reports_entity_table_counts(tmp_path):
+    import sqlite3
+
+    current = tmp_path / "current"
+    current.mkdir()
+    db = current / "index.db"
+    with sqlite3.connect(db) as conn:
+        for table in ["captures", "sessions", "timeline_blocks", "entries", "extractor_records", "entities", "entity_mentions", "entity_edges"]:
+            conn.execute(f"create table {table} (id integer primary key)")
+            conn.execute(f"insert into {table} default values")
+
+    summary = openchronicle_index_summary(tmp_path)
+
+    assert summary["status"] == "ok"
+    assert "captures=1" in summary["evidence"]
+    assert "entities=1" in summary["evidence"]

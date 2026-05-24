@@ -13,11 +13,13 @@ import json
 import os
 import pathlib
 import re
+import sqlite3
 import subprocess
+
 import sys
 import time
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -26,6 +28,9 @@ ARTIFACT_SLUG = "agent-health"
 PALMER_PROFILE = pathlib.Path("/Users/skylarpayne/.hermes/profiles/palmer")
 ECHO_PROFILE = pathlib.Path("/Users/skylarpayne/.hermes/profiles/echo")
 ARTIFACT_HOME = pathlib.Path("/Users/skylarpayne/.hermes/artifacts")
+HERMES_AGENT_REPO = pathlib.Path("/Users/skylarpayne/.hermes/hermes-agent")
+SKYVAULT = pathlib.Path("/Users/skylarpayne/skyvault")
+OPENCHRONICLE_ROOT = pathlib.Path("/Users/skylarpayne/.hermes/shared/macbook-openchronicle")
 SKILL_CANVA = PALMER_PROFILE / "skills/productivity/third-party-oauth-integrations/scripts/canva_oauth.py"
 
 STATUS_ORDER = {"ok": 0, "warn": 1, "fail": 2, "unknown": 3}
@@ -151,14 +156,38 @@ def process_inventory(ps_output: str) -> dict[str, Any]:
     }
 
 
+def _iso_age_hours(value: Any) -> float | None:
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return round((datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds() / 3600, 1)
+    except Exception:
+        return None
+
+
 def codex_auth_summary(home: pathlib.Path) -> dict[str, str]:
-    """Report Codex auth presence without reading or exposing token contents."""
+    """Report Codex auth freshness without exposing token contents."""
     auth_file = home / ".codex" / "auth.json"
-    if auth_file.exists() and auth_file.stat().st_size > 0:
-        return {"status": "ok", "evidence": "Codex auth file exists and is non-empty"}
-    if auth_file.exists():
+    if not auth_file.exists():
+        return {"status": "warn", "evidence": f"Codex auth file missing at {auth_file}"}
+    if auth_file.stat().st_size <= 0:
         return {"status": "warn", "evidence": "Codex auth file exists but is empty"}
-    return {"status": "warn", "evidence": f"Codex auth file missing at {auth_file}"}
+
+    data = parse_json(auth_file.read_text(errors="ignore"))
+    if not isinstance(data, dict):
+        return {"status": "warn", "evidence": "Codex auth file exists but JSON is unreadable"}
+
+    last_refresh = data.get("last_refresh") or data.get("lastRefresh") or data.get("expires_at")
+    age_hours = _iso_age_hours(last_refresh) if last_refresh else None
+    auth_mode = data.get("auth_mode") or data.get("authMode") or "unknown"
+    has_api_key = bool(data.get("OPENAI_API_KEY"))
+    token_fields = sum(1 for key in data if re.search(r"(?i)(token|refresh|access|credential|session)", str(key)))
+    evidence = f"auth_mode={auth_mode}; token_like_fields={token_fields}; api_key_present={has_api_key}; last_refresh={'present' if last_refresh else 'missing'}"
+    if age_hours is not None:
+        evidence += f"; last_refresh_age_hours={age_hours}"
+    status = "ok" if last_refresh or has_api_key or token_fields else "warn"
+    return {"status": status, "evidence": evidence}
 
 
 def parse_cron_list_output(text: str) -> dict[str, Any]:
@@ -207,6 +236,214 @@ def summarize_recent_log_errors(log_paths: list[pathlib.Path], max_lines: int = 
                 if len(samples) < 8:
                     samples.append(f"{path.name}: {redact(line, 220)}")
     return {"files_checked": files_checked, "error_lines": error_lines, "samples": samples}
+
+
+def parse_df_output(text: str) -> dict[str, Any] | None:
+    """Parse POSIX `df -Pk` output into a compact storage summary."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    parts = lines[-1].split()
+    if len(parts) < 6:
+        return None
+    try:
+        total_kb = int(parts[1])
+        used_kb = int(parts[2])
+        available_kb = int(parts[3])
+    except ValueError:
+        return None
+    free_percent = round((available_kb / total_kb) * 100, 1) if total_kb else 0.0
+    used_percent = round((used_kb / total_kb) * 100, 1) if total_kb else 0.0
+    return {
+        "filesystem": parts[0],
+        "total_gb": round(total_kb / 1024 / 1024, 1),
+        "used_gb": round(used_kb / 1024 / 1024, 1),
+        "available_gb": round(available_kb / 1024 / 1024, 1),
+        "used_percent": used_percent,
+        "free_percent": free_percent,
+        "mount": parts[-1],
+    }
+
+
+def directory_size_gb(path: pathlib.Path) -> float | None:
+    try:
+        total = 0
+        for root, dirs, files in os.walk(path):
+            # Avoid charging symlinked trees twice.
+            dirs[:] = [d for d in dirs if not (pathlib.Path(root) / d).is_symlink()]
+            for name in files:
+                p = pathlib.Path(root) / name
+                try:
+                    if not p.is_symlink():
+                        total += p.stat().st_size
+                except OSError:
+                    continue
+        return round(total / 1024 / 1024 / 1024, 2)
+    except OSError:
+        return None
+
+
+def hermes_release_gap(version_text: str, timeout: int = 20) -> dict[str, Any]:
+    """Return last installed Hermes release and newer GitHub releases without leaking gh auth."""
+    m = re.search(r"Hermes Agent\s+[^\n]*\((\d{4})\.(\d{1,2})\.(\d{1,2})\)", version_text)
+    installed_tag = f"v{int(m.group(1))}.{int(m.group(2))}.{int(m.group(3))}" if m else ""
+    env = os.environ.copy()
+    env["HOME"] = "/Users/skylarpayne"
+    rc, out, err, _ = run([
+        "gh", "release", "list",
+        "--repo", "NousResearch/hermes-agent",
+        "--limit", "30",
+        "--json", "tagName,publishedAt,isLatest",
+    ], env, timeout)
+    if rc != 0:
+        return {"status": "warn", "evidence": f"installed_release={installed_tag or 'unknown'}; GitHub release check failed: {redact(err or out, 180)}"}
+    releases = parse_json(out)
+    if not isinstance(releases, list):
+        return {"status": "warn", "evidence": f"installed_release={installed_tag or 'unknown'}; GitHub release output unreadable"}
+    tags = [str(r.get("tagName", "")) for r in releases if isinstance(r, dict)]
+    newest = releases[0] if releases and isinstance(releases[0], dict) else {}
+    if installed_tag and installed_tag in tags:
+        newer_count = tags.index(installed_tag)
+        status = "ok" if newer_count == 0 else "warn"
+        return {
+            "status": status,
+            "evidence": f"installed_release={installed_tag}; latest_release={newest.get('tagName','unknown')} published={newest.get('publishedAt','unknown')}; releases_since_installed={newer_count}",
+        }
+    return {
+        "status": "warn",
+        "evidence": f"installed_release={installed_tag or 'unknown'} not found in latest {len(tags)} GitHub releases; latest_release={newest.get('tagName','unknown')}",
+    }
+
+
+def git_remote_summary(repo: pathlib.Path, timeout: int = 20) -> dict[str, str]:
+    if not (repo / ".git").exists():
+        return {"status": "warn", "evidence": f"git checkout missing at {repo}"}
+    env = os.environ.copy()
+    rc, branch, err, _ = run(["git", "-C", str(repo), "branch", "--show-current"], env, timeout)
+    if rc != 0:
+        return {"status": "fail", "evidence": redact(err or branch)}
+    branch = branch.strip() or "main"
+    rc, head, err, _ = run(["git", "-C", str(repo), "rev-parse", "HEAD"], env, timeout)
+    if rc != 0:
+        return {"status": "fail", "evidence": redact(err or head)}
+    rc, remote, err, _ = run(["git", "-C", str(repo), "ls-remote", "origin", f"refs/heads/{branch}"], env, timeout)
+    if rc != 0:
+        return {"status": "warn", "evidence": f"local {branch}@{head.strip()[:8]}; remote check failed: {redact(err or remote, 180)}"}
+    remote_sha = (remote.split() or [""])[0]
+    local_sha = head.strip()
+    if remote_sha and remote_sha == local_sha:
+        return {"status": "ok", "evidence": f"{branch}@{local_sha[:8]} matches origin/{branch}"}
+    if remote_sha:
+        return {"status": "warn", "evidence": f"{branch} local {local_sha[:8]} differs from origin/{branch} {remote_sha[:8]}"}
+    return {"status": "warn", "evidence": f"{branch}@{local_sha[:8]}; origin branch not found"}
+
+
+def parse_memory_config(config_text: str) -> dict[str, str]:
+    provider = ""
+    memory_enabled = ""
+    user_enabled = ""
+    context_engine = ""
+    section = ""
+    for raw in config_text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        if raw and not raw.startswith(" ") and raw.rstrip().endswith(":"):
+            section = raw.strip().rstrip(":")
+            continue
+        line = raw.strip()
+        if section == "memory":
+            if line.startswith("provider:"):
+                provider = line.split(":", 1)[1].strip().strip("'\"")
+            elif line.startswith("memory_enabled:"):
+                memory_enabled = line.split(":", 1)[1].strip()
+            elif line.startswith("user_profile_enabled:"):
+                user_enabled = line.split(":", 1)[1].strip()
+        elif section == "context" and line.startswith("engine:"):
+            context_engine = line.split(":", 1)[1].strip().strip("'\"")
+    return {"provider": provider, "memory_enabled": memory_enabled, "user_profile_enabled": user_enabled, "context_engine": context_engine}
+
+
+def skill_usage_summary(path: pathlib.Path) -> dict[str, Any]:
+    data = parse_json(path.read_text(errors="ignore")) if path.exists() else None
+    if not isinstance(data, dict):
+        return {"status": "warn", "evidence": f"skill usage file missing/unreadable at {path}"}
+    active = [name for name, meta in data.items() if isinstance(meta, dict) and meta.get("state", "active") == "active"]
+    patched = [name for name, meta in data.items() if isinstance(meta, dict) and (meta.get("patch_count") or 0) > 0]
+    used = sorted(
+        (
+            (name, meta.get("use_count") or 0, meta.get("last_used_at") or "")
+            for name, meta in data.items()
+            if isinstance(meta, dict)
+        ),
+        key=lambda row: row[1],
+        reverse=True,
+    )[:5]
+    top = ", ".join(f"{name}({count})" for name, count, _ in used) or "no usage recorded"
+    return {
+        "status": "ok",
+        "evidence": f"active={len(active)}; patched_for_feedback={len(patched)}; top={top}",
+    }
+
+
+def latest_release_summary(root: pathlib.Path) -> dict[str, Any]:
+    releases = root / "releases"
+    if not releases.exists():
+        return {"status": "warn", "evidence": f"OpenChronicle release root missing at {releases}"}
+    candidates = sorted((p for p in releases.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
+    if not candidates:
+        return {"status": "warn", "evidence": "No OpenChronicle releases found"}
+    latest = candidates[0]
+    manifest = latest / "manifest.json"
+    data = parse_json(manifest.read_text(errors="ignore")) if manifest.exists() else None
+    if not isinstance(data, dict):
+        return {"status": "warn", "evidence": f"latest release {latest.name} has no readable manifest"}
+    created = data.get("created_at", "unknown")
+    age_hours = _iso_age_hours(created)
+    status = "ok" if age_hours is not None and age_hours <= 48 else "warn"
+    evidence = f"release={latest.name}; created_at={created}; captures={data.get('capture_files')}; memories={data.get('memory_files')}; sqlite_backup={'sqlite_backup' in (data.get('contains') or [])}"
+    if age_hours is not None:
+        evidence += f"; age_hours={age_hours}"
+    return {"status": status, "evidence": evidence}
+
+
+def openchronicle_index_summary(root: pathlib.Path) -> dict[str, Any]:
+    current = root / "current"
+    db_path = current / "index.db"
+    if not db_path.exists():
+        return {"status": "warn", "evidence": f"OpenChronicle index DB missing at {db_path}"}
+
+    core_tables = ["captures", "sessions", "timeline_blocks", "entries", "extractor_records"]
+    entity_tables = ["entities", "entity_mentions", "entity_edges"]
+    counts: dict[str, int | str] = {}
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2) as conn:
+            table_rows = conn.execute("select name from sqlite_master where type='table'").fetchall()
+            tables = {str(row[0]) for row in table_rows}
+            for table in core_tables + entity_tables:
+                if table in tables:
+                    counts[table] = int(conn.execute(f"select count(*) from {table}").fetchone()[0])
+                else:
+                    counts[table] = "missing"
+    except sqlite3.Error as exc:
+        return {"status": "warn", "evidence": f"OpenChronicle index unreadable: {redact(str(exc), 180)}"}
+
+    core_ok = all(isinstance(counts.get(table), int) and int(counts[table]) > 0 for table in ["captures", "sessions", "timeline_blocks"])
+    entities = counts.get("entities")
+    entity_ok = isinstance(entities, int) and entities > 0
+    status = "ok" if core_ok and entity_ok else "warn"
+    evidence = "; ".join(f"{table}={counts[table]}" for table in core_tables + entity_tables)
+    return {"status": status, "evidence": evidence}
+
+
+def skyvault_entity_summary(root: pathlib.Path) -> dict[str, Any]:
+    people_dir = root / "Palmer/people"
+    if not people_dir.exists():
+        return {"status": "warn", "evidence": f"People/entity note directory missing at {people_dir}"}
+    notes = [p for p in people_dir.glob("*.md") if p.name not in {"INDEX.md", "QUICK-REFERENCE.md", "CRM-SUMMARY.md"}]
+    summary = people_dir / "CRM-SUMMARY.md"
+    status = "ok" if notes and summary.exists() else "warn"
+    evidence = f"people_entity_notes={len(notes)}; crm_summary={'present' if summary.exists() else 'missing'}"
+    return {"status": status, "evidence": evidence}
 
 
 def add_check(checks: list[Check], **kwargs: Any) -> None:
@@ -433,19 +670,6 @@ def check_kanban_artifactd(checks: list[Check]) -> None:
         remediation = "Check shared DB /Users/skylarpayne/.hermes/kanban.db and hermes CLI path before blaming workers."
     add_check(checks, id="palmer-kanban", agent="Palmer", app="Hermes Kanban", account="shared root board", operation="kanban stats", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
 
-    rc, out, err, secs = run(["curl", "-fsS", "https://artifacts.skylarbpayne.com/smoke-live"], os.environ.copy(), 20)
-    if rc == 0:
-        status = "ok"
-        summary = "artifactd public tunnel reachable"
-        evidence = "GET /smoke-live returned content"
-        remediation = ""
-    else:
-        status = "fail"
-        summary = "artifactd public smoke failed"
-        evidence = redact(err or out, 360)
-        remediation = "Check system LaunchDaemons for artifactd/cloudflared, then verify local 127.0.0.1:8787 before DNS/tunnel debugging."
-    add_check(checks, id="artifactd-public", agent="Palmer", app="artifactd", account="artifacts.skylarbpayne.com", operation="HTTPS smoke-live", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
-
 
 def check_runtime_ops(checks: list[Check]) -> None:
     rc, out, err, secs = run(["ps", "-axo", "pid=,comm=,args="], os.environ.copy(), 20)
@@ -518,6 +742,104 @@ def check_recent_logs(checks: list[Check]) -> None:
     add_check(checks, id="recent-log-health", agent="Palmer", app="Recent logs", account="palmer profile", operation="scan last log lines", status=status, summary="Recent logs contain errors" if error_lines else "No recent log errors in scanned files", evidence=evidence, remediation=remediation, seconds=time.time() - start)
 
 
+def check_hermes_update_health(checks: list[Check]) -> None:
+    rc, out, err, secs = run(["hermes", "--version"], os.environ.copy(), 25)
+    if rc == 0:
+        repo = git_remote_summary(HERMES_AGENT_REPO)
+        releases = hermes_release_gap(out)
+        status = "fail" if "fail" in {repo["status"], releases["status"]} else "warn" if "warn" in {repo["status"], releases["status"]} else "ok"
+        evidence = redact(out, 220) + " | " + repo["evidence"] + " | " + releases["evidence"]
+        summary = "Hermes CLI/version reachable and release-current" if status == "ok" else "Hermes update state needs review"
+        remediation = "" if status == "ok" else "Review installed release vs GitHub releases before running `hermes update`; updates may restart agents."
+    else:
+        status = "fail"
+        summary = "Hermes CLI version check failed"
+        evidence = redact(err or out, 360)
+        remediation = "Check the active Hermes venv/path before attempting update or gateway work."
+    add_check(checks, id="hermes-updates", agent="Palmer host", app="Hermes updates/releases", account="hermes-agent checkout", operation="hermes --version + origin compare", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
+
+
+def check_storage_health(checks: list[Check]) -> None:
+    rc, out, err, secs = run(["df", "-Pk", "/Users/skylarpayne"], os.environ.copy(), 20)
+    parsed = parse_df_output(out) if rc == 0 else None
+    if parsed:
+        free = parsed["free_percent"]
+        status = "fail" if free < 5 else "warn" if free < 15 else "ok"
+        summary = "Storage has safe free space" if status == "ok" else "Mac storage is getting tight"
+        hermes_gb = directory_size_gb(pathlib.Path("/Users/skylarpayne/.hermes"))
+        artifactd_gb = directory_size_gb(pathlib.Path("/Users/skylarpayne/artifactd"))
+        evidence = f"free={parsed['available_gb']}GB ({free}%); used={parsed['used_gb']}GB/{parsed['total_gb']}GB; ~/.hermes={hermes_gb}GB; artifactd={artifactd_gb}GB"
+        remediation = "" if status == "ok" else "Run the macOS storage audit skill and prioritize logs/caches/artifact bloat; do not delete project data blind."
+    else:
+        status = "fail"
+        summary = "Storage check failed"
+        evidence = redact(err or out, 360)
+        remediation = "Run `df -h /Users/skylarpayne` on the host and inspect disk pressure."
+    add_check(checks, id="storage-risk", agent="Palmer host", app="Storage risk", account="Mac mini disk", operation="df + managed dir sizes", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
+
+
+def check_compaction_and_memory(checks: list[Check]) -> None:
+    start = time.time()
+    config_path = PALMER_PROFILE / "config.yaml"
+    config_text = config_path.read_text(errors="ignore") if config_path.exists() else ""
+    summary = parse_memory_config(config_text)
+    compact_ok = summary["context_engine"] == "compressor"
+    status = "ok" if compact_ok else "warn"
+    evidence = f"context.engine={summary['context_engine'] or 'missing'}; memory.provider={summary['provider'] or 'missing'}; memory_enabled={summary['memory_enabled']}; user_profile_enabled={summary['user_profile_enabled']}"
+    remediation = "" if compact_ok else "Set context.engine to compressor after confirming current Hermes config expectations."
+    add_check(checks, id="compaction-config", agent="Palmer", app="Compaction", account="palmer profile", operation="config context engine", status=status, summary="Conversation compaction configured" if compact_ok else "Conversation compaction config missing", evidence=evidence, remediation=remediation, seconds=time.time() - start)
+
+    start = time.time()
+    provider_ok = summary["provider"] == "hindsight" and summary["memory_enabled"].lower() == "true"
+    hindsight_logs = summarize_recent_log_errors([PALMER_PROFILE / "logs/hindsight-embed.log"], max_lines=120)
+    status = "ok" if provider_ok and hindsight_logs["error_lines"] == 0 else "warn"
+    evidence = f"provider={summary['provider'] or 'missing'}; memory_enabled={summary['memory_enabled']}; hindsight_log_errors={hindsight_logs['error_lines']}"
+    if hindsight_logs["samples"]:
+        evidence += " | samples: " + " || ".join(hindsight_logs["samples"])
+    remediation = "" if status == "ok" else "Check Hindsight provider config and newest hindsight-embed.log errors before trusting long-term recall."
+    add_check(checks, id="memory-hindsight", agent="Palmer", app="Memory / Hindsight", account="palmer profile", operation="config + embed log", status=status, summary="Hindsight memory configured" if provider_ok else "Memory provider needs review", evidence=evidence, remediation=remediation, seconds=time.time() - start)
+
+
+def check_skill_feedback_health(checks: list[Check]) -> None:
+    start = time.time()
+    summary = skill_usage_summary(PALMER_PROFILE / "skills/.usage.json")
+    add_check(checks, id="skill-feedback", agent="Palmer", app="Skills / corrective feedback", account="palmer skill library", operation="skills/.usage.json", status=summary["status"], summary="Skill usage and patch history visible" if summary["status"] == "ok" else "Skill usage tracking needs review", evidence=summary["evidence"], remediation="" if summary["status"] == "ok" else "Verify the skill curator/usage tracker is writing profile-local usage metadata.", seconds=time.time() - start)
+
+
+def check_openchronicle_entity_health(checks: list[Check]) -> None:
+    start = time.time()
+    summary = latest_release_summary(OPENCHRONICLE_ROOT)
+    add_check(checks, id="openchronicle-release", agent="Palmer", app="OpenChronicle", account="MacBook context bridge", operation="latest release manifest", status=summary["status"], summary="OpenChronicle export is fresh" if summary["status"] == "ok" else "OpenChronicle export may be stale", evidence=summary["evidence"], remediation="" if summary["status"] == "ok" else "Inspect macbook-context-bridge export/import pipeline before relying on activity/entity context.", seconds=time.time() - start)
+
+    start = time.time()
+    index = openchronicle_index_summary(OPENCHRONICLE_ROOT)
+    add_check(checks, id="openchronicle-index-entities", agent="Palmer", app="OpenChronicle entity extraction", account="current/index.db", operation="SQLite table counts", status=index["status"], summary="OpenChronicle entity tables populated" if index["status"] == "ok" else "OpenChronicle core data present, entity tables missing/unpopulated", evidence=index["evidence"], remediation="" if index["status"] == "ok" else "Wire the context bridge/entity extractor to emit entities, entity_mentions, and entity_edges into the export, or document that Skyvault note extraction is the current source of truth.", seconds=time.time() - start)
+
+    start = time.time()
+    entity = skyvault_entity_summary(SKYVAULT)
+    add_check(checks, id="entity-graph-skyvault", agent="Palmer", app="Entity graph", account="Skyvault Palmer people", operation="entity note inventory", status=entity["status"], summary="Entity note surface present" if entity["status"] == "ok" else "Entity note surface needs review", evidence=entity["evidence"], remediation="" if entity["status"] == "ok" else "Repair Skyvault Palmer/people index before treating entity graph health as complete.", seconds=time.time() - start)
+
+
+def check_artifactd_instances(checks: list[Check]) -> None:
+    targets = [
+        ("Palmer", "artifactd", "artifacts.skylarbpayne.com", "https://artifacts.skylarbpayne.com/smoke-live"),
+        ("Echo", "artifactd", "artifacts.agoracomms.com", "https://artifacts.agoracomms.com/smoke-live"),
+    ]
+    for agent, app, account, url in targets:
+        rc, out, err, secs = run(["curl", "-fsS", url], os.environ.copy(), 20)
+        if rc == 0:
+            status = "ok"
+            summary = f"{agent} artifactd public smoke passed"
+            evidence = "GET smoke-live returned content"
+            remediation = ""
+        else:
+            status = "fail"
+            summary = f"{agent} artifactd public smoke failed"
+            evidence = redact(err or out, 360)
+            remediation = f"Check local {agent} artifactd service/LaunchDaemon and Cloudflare tunnel before changing dashboard code."
+        add_check(checks, id=f"{agent.lower()}-artifactd-public", agent=agent, app=app, account=account, operation="HTTPS smoke-live", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
+
+
 def collect_checks() -> list[Check]:
     checks: list[Check] = []
     palmer_env = load_profile_env(PALMER_PROFILE)
@@ -547,10 +869,16 @@ def collect_checks() -> list[Check]:
     check_canva(checks, echo_env)
     check_github(checks)
     check_kanban_artifactd(checks)
+    check_artifactd_instances(checks)
     check_runtime_ops(checks)
     check_codex_auth(checks)
+    check_hermes_update_health(checks)
+    check_storage_health(checks)
     check_cron_health(checks)
     check_recent_logs(checks)
+    check_compaction_and_memory(checks)
+    check_skill_feedback_health(checks)
+    check_openchronicle_entity_health(checks)
     return checks
 
 
@@ -679,7 +1007,7 @@ def render_html(checks: list[Check], generated_at: str) -> str:
     <div class="hero">
       <section class="panel">
         <div class="status-big">{status_dot(summary['overall'])}{esc(summary['label'])}</div>
-        <p>This is the boring ops console we actually need: live smoke tests by profile, app, account, runtime process, and Codex auth surface. The goal is to avoid the dumb failure mode where one Gmail token expires and we nuke every integration from orbit.</p>
+        <p>This is the boring ops console we actually need: live smoke tests by profile, app, account, runtime process, storage pressure, Hermes update state, compaction/memory/Hindsight, skills feedback, OpenChronicle/entity graph, and artifactd surfaces. The goal is to avoid the dumb failure mode where one Gmail token expires and we nuke every integration from orbit.</p>
         <div class="counts">
           <div class="count"><b>{summary['counts'].get('ok', 0)}</b><span>ok</span></div>
           <div class="count"><b>{summary['counts'].get('warn', 0)}</b><span>warn</span></div>
@@ -697,6 +1025,15 @@ def render_html(checks: list[Check], generated_at: str) -> str:
     {grouped}
 
     <section class="playbook">
+      <article class="panel">
+        <h3>V0 coverage</h3>
+        <ul>
+          <li>Hermes updates/releases: CLI version plus local checkout vs origin.</li>
+          <li>Host risk: storage pressure, runtime process inventory, cron, recent logs, Codex auth.</li>
+          <li>Agent substrate: gog/Google, Outlook, Asana, Canva, GitHub, Kanban, Palmer/Echo artifactd.</li>
+          <li>Knowledge layer: compaction config, Hindsight memory, skill feedback/patch usage, OpenChronicle export, Skyvault entity notes.</li>
+        </ul>
+      </article>
       <article class="panel">
         <h3>Email auth repair rule</h3>
         <ol>
@@ -720,7 +1057,7 @@ def render_html(checks: list[Check], generated_at: str) -> str:
         <pre>cd /Users/skylarpayne/artifactd
 . .venv/bin/activate
 python scripts/agent_health_dashboard.py --out dist/agent-health
-artifactd --home /Users/skylarpayne/.hermes/artifacts --public-base-url https://artifacts.skylarbpayne.com deploy dist/agent-health --slug agent-health --title "Palmer / Echo ops console" --description "Protected dashboard with live smoke-test status for Palmer and Echo app connectivity, runtime processes, and Codex auth." --pinned</pre>
+python -c 'from pathlib import Path; from artifactd.store import ArtifactStore; ArtifactStore("/Users/skylarpayne/.hermes/artifacts").deploy(Path("dist/agent-health"), slug="agent-health", title="Palmer / Echo ops console", description="Protected dashboard with live smoke-test status for Palmer/Echo connectivity, runtime processes, Codex auth, storage, Hermes updates, compaction/memory/Hindsight, skill feedback, OpenChronicle/entity graph, and artifactd surfaces.", tags=["ops", "health", "palmer", "echo"], pinned=True, auth_mode="profile")'</pre>
       </article>
     </section>
 
