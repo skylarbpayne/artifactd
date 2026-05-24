@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from agent_health_dashboard import (
     Check,
+    artifactd_status_from_codes,
     codex_auth_summary,
     latest_release_summary,
     openchronicle_index_summary,
@@ -76,6 +77,12 @@ def test_render_html_includes_ops_console_language():
     assert "Codex" in html
     assert "OpenChronicle/entity graph" in html
     assert "compaction/memory/Hindsight" in html
+
+
+def test_artifactd_status_accepts_protected_routes_as_healthy_without_old_smoke_slug():
+    assert artifactd_status_from_codes("401", "401", {"401", "200"})["status"] == "ok"
+    assert artifactd_status_from_codes("401", "404", {"401", "200"})["status"] == "warn"
+    assert artifactd_status_from_codes("000", "000", {"401", "200"})["status"] == "fail"
 
 
 def test_parse_cron_list_output_counts_active_paused_and_failed_runs():

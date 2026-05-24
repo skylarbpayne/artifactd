@@ -820,24 +820,46 @@ def check_openchronicle_entity_health(checks: list[Check]) -> None:
     add_check(checks, id="entity-graph-skyvault", agent="Palmer", app="Entity graph", account="Skyvault Palmer people", operation="entity note inventory", status=entity["status"], summary="Entity note surface present" if entity["status"] == "ok" else "Entity note surface needs review", evidence=entity["evidence"], remediation="" if entity["status"] == "ok" else "Repair Skyvault Palmer/people index before treating entity graph health as complete.", seconds=time.time() - start)
 
 
+def http_status_code(url: str) -> tuple[str, str, float]:
+    rc, out, err, secs = run(["curl", "-o", "/dev/null", "-sS", "-w", "%{http_code}", url], os.environ.copy(), 20)
+    code = (out or "").strip()[-3:] or "000"
+    if rc != 0 and code == "000":
+        return code, redact(err or out, 260), secs
+    return code, "", secs
+
+
+def artifactd_status_from_codes(root_code: str, probe_code: str, healthy_probe_codes: set[str]) -> dict[str, str]:
+    root_healthy_codes = {"200", "401"}
+    if root_code == "000" or probe_code == "000" or root_code not in root_healthy_codes:
+        return {"status": "fail", "reason": f"root={root_code}; probe={probe_code}"}
+    if probe_code in healthy_probe_codes:
+        return {"status": "ok", "reason": f"root={root_code}; probe={probe_code}"}
+    return {"status": "warn", "reason": f"root={root_code}; probe={probe_code}"}
+
+
 def check_artifactd_instances(checks: list[Check]) -> None:
     targets = [
-        ("Palmer", "artifactd", "artifacts.skylarbpayne.com", "https://artifacts.skylarbpayne.com/smoke-live"),
-        ("Echo", "artifactd", "artifacts.agoracomms.com", "https://artifacts.agoracomms.com/smoke-live"),
+        ("Palmer", "artifactd", "artifacts.skylarbpayne.com", "https://artifacts.skylarbpayne.com/", "https://artifacts.skylarbpayne.com/smoke-live", {"200"}, "smoke-live"),
+        ("Echo", "artifactd", "artifacts.agoracomms.com", "https://artifacts.agoracomms.com/", "https://artifacts.agoracomms.com/google-auth-repair-center", {"401", "200"}, "google-auth-repair-center"),
     ]
-    for agent, app, account, url in targets:
-        rc, out, err, secs = run(["curl", "-fsS", url], os.environ.copy(), 20)
-        if rc == 0:
-            status = "ok"
-            summary = f"{agent} artifactd public smoke passed"
-            evidence = "GET smoke-live returned content"
+    for agent, app, account, root_url, probe_url, healthy_probe_codes, probe_label in targets:
+        root_code, root_error, root_secs = http_status_code(root_url)
+        probe_code, probe_error, probe_secs = http_status_code(probe_url)
+        result = artifactd_status_from_codes(root_code, probe_code, healthy_probe_codes)
+        evidence = f"GET root={root_code}; GET {probe_label}={probe_code}"
+        errors = "; ".join(part for part in [root_error, probe_error] if part)
+        if errors:
+            evidence += f"; curl={redact(errors, 220)}"
+        if result["status"] == "ok":
+            summary = f"{agent} artifactd protected/public routes healthy"
             remediation = ""
+        elif result["status"] == "warn":
+            summary = f"{agent} artifactd reachable but expected probe route needs review"
+            remediation = f"Service and tunnel appear reachable; verify the expected {probe_label} artifact/route before changing LaunchDaemons."
         else:
-            status = "fail"
-            summary = f"{agent} artifactd public smoke failed"
-            evidence = redact(err or out, 360)
+            summary = f"{agent} artifactd public route failed"
             remediation = f"Check local {agent} artifactd service/LaunchDaemon and Cloudflare tunnel before changing dashboard code."
-        add_check(checks, id=f"{agent.lower()}-artifactd-public", agent=agent, app=app, account=account, operation="HTTPS smoke-live", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
+        add_check(checks, id=f"{agent.lower()}-artifactd-public", agent=agent, app=app, account=account, operation=f"HTTPS root + {probe_label}", status=result["status"], summary=summary, evidence=evidence, remediation=remediation, seconds=root_secs + probe_secs)
 
 
 def collect_checks() -> list[Check]:
