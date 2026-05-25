@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from .actions import CAPABILITY_REGISTRY, KanbanExecutor, register_action_routes
 from .interactive import register_interactive_routes
 from .security import sign_artifact_cookie, sign_csrf_token, verify_artifact_cookie, verify_csrf_token, verify_password
+from .state import register_state_routes
 from .store import Artifact, ArtifactStore
 
 DEFAULT_HOME = Path(os.environ.get("ARTIFACTD_HOME", "~/.hermes/artifacts")).expanduser()
@@ -192,6 +193,7 @@ def create_app(
 
     register_action_routes(app, store, secret, kanban_executor=executor)
     register_interactive_routes(app, store, secret)
+    register_state_routes(app, store, secret)
 
     @app.get("/{slug}")
     async def artifact_index(slug: str, request: Request) -> Response:

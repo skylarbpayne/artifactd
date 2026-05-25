@@ -356,6 +356,13 @@ CAPABILITY_REGISTRY: dict[str, Capability] = {
         schema={"type": "object", "properties": {"reason": {"type": "string", "maxLength": 500}}},
         handler=_artifact_archive,
     ),
+    "artifact.state": Capability(
+        name="artifact.state",
+        description="Read and write a small JSON state document for this artifact through /{slug}/_state/{key}.",
+        schema={"type": "object", "required": ["snapshot"], "properties": {"snapshot": {"type": "object"}, "client_id": {"type": "string"}, "expected_version": {"type": "integer"}}},
+        handler=_approval_placeholder,
+        executes_via="artifactd state sidecar",
+    ),
     "kanban.comment": Capability(
         name="kanban.comment",
         description="Append a comment to an existing Hermes Kanban task.",

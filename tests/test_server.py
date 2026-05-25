@@ -109,6 +109,52 @@ def test_homepage_hides_archived_artifacts_and_archive_page_lists_them(tmp_path:
     assert "Active Artifact" not in archive.text
 
 
+def test_artifact_state_requires_capability_and_persists_versioned_json(tmp_path: Path):
+    source = tmp_path / "canvas.html"
+    source.write_text("<h1>Canvas</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    store.deploy(source, slug="plain")
+    store.deploy(source, slug="canvas", capabilities=["artifact.state"])
+    client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
+
+    forbidden = client.get("/plain/_state/board")
+    missing = client.get("/canvas/_state/board")
+    saved = client.put("/canvas/_state/board", json={"snapshot": {"records": {"shape:1": {"type": "geo"}}}, "client_id": "test"})
+    loaded = client.get("/canvas/_state/board")
+    conflict = client.put("/canvas/_state/board", json={"snapshot": {}, "expected_version": 0})
+
+    assert forbidden.status_code == 403
+    assert missing.status_code == 200
+    assert missing.json()["exists"] is False
+    assert saved.status_code == 200
+    assert saved.json()["version"] == 1
+    assert saved.json()["updated_by"] == "test"
+    assert loaded.status_code == 200
+    assert loaded.json()["exists"] is True
+    assert loaded.json()["version"] == 1
+    assert loaded.json()["snapshot"]["records"]["shape:1"]["type"] == "geo"
+    assert conflict.status_code == 409
+
+
+def test_protected_artifact_state_requires_workspace_login_or_share_token(tmp_path: Path):
+    source = tmp_path / "canvas.html"
+    source.write_text("<h1>Canvas</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    _deploy_profile_protected(store, source, slug="protected-canvas", capabilities=["artifact.state"])
+    token = store.create_share_override("protected-canvas")
+    client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
+
+    locked = client.get("/protected-canvas/_state/board")
+    shared = client.put(f"/protected-canvas/_state/board?share={token}", json={"snapshot": {"ok": True}})
+    client.post("/protected-canvas/login", data={"password": "opensesame"}, follow_redirects=False)
+    loaded = client.get("/protected-canvas/_state/board")
+
+    assert locked.status_code == 401
+    assert shared.status_code == 200
+    assert loaded.status_code == 200
+    assert loaded.json()["snapshot"] == {"ok": True}
+
+
 def test_interactive_gog_endpoint_requires_workspace_password_and_scopes_palmer_accounts(tmp_path: Path):
     source = tmp_path / "reauth.html"
     source.write_text("<h1>Reauth</h1>", encoding="utf-8")
