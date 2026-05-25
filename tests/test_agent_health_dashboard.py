@@ -3,9 +3,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+import agent_health_dashboard as ahd
+
 from agent_health_dashboard import (
     Check,
     artifactd_status_from_codes,
+    check_canva,
     codex_auth_summary,
     extract_markdown_items,
     kanban_readiness_summary,
@@ -335,7 +338,8 @@ def test_repair_queue_turns_warning_snapshot_into_clearing_actions():
 
     assert [item["id"] for item in queue][:3] == ["recent-log-health", "hermes-updates", "truth-current-priorities-note"]
     assert queue[0]["recommended_action"].startswith("Run a live Hindsight")
-    assert "optional" in queue_by_id(queue, "echo-canva")["investigation"].lower()
+    assert "mcp-remote" in queue_by_id(queue, "echo-canva")["investigation"]
+    assert "CANVA_CLIENT_ID" in queue_by_id(queue, "echo-canva")["investigation"]
     assert "Automate" in queue_by_id(queue, "hermes-updates")["feedback_loop"]
 
 
@@ -362,6 +366,24 @@ def test_render_html_surfaces_issue_clearing_board():
     assert "Investigated finding" in html
     assert "Automate next" in html
     assert "OpenChronicle index is readable" in html
+
+
+def test_check_canva_smokes_echo_mcp_not_static_env(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, env=None, timeout=25):
+        calls.append((cmd, env, timeout))
+        return 0, "Testing 'Canva'...\n  ✓ Connected (3217ms)\n  ✓ Tools discovered: 32\n", "", 3.2
+
+    monkeypatch.setattr(ahd, "run", fake_run)
+    checks = []
+
+    check_canva(checks, {"CANVA_CLIENT_ID": "ignored-obsolete-pattern"})
+
+    assert calls == [(["hermes", "-p", "echo", "mcp", "test", "Canva"], None, 60)]
+    assert checks[0].status == "ok"
+    assert checks[0].summary == "Canva MCP smoke passed"
+    assert checks[0].operation == "hermes -p echo mcp test Canva"
 
 
 def queue_by_id(queue, item_id):

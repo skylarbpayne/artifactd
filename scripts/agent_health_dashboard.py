@@ -886,22 +886,31 @@ def check_asana(checks: list[Check], env: dict[str, str]) -> None:
 
 
 def check_canva(checks: list[Check], env: dict[str, str]) -> None:
-    if not SKILL_CANVA.exists():
-        add_check(checks, id="echo-canva", agent="Echo", app="Canva", account="Echo profile", operation="Canva smoke helper", status="unknown", summary="Canva helper script missing", evidence=str(SKILL_CANVA), remediation="Restore third-party-oauth-integrations skill or verify Canva manually.")
-        return
-    rc, out, err, secs = run(["python3", str(SKILL_CANVA), "smoke"], env, 30)
-    if rc == 0:
+    # Echo uses Canva through the MCP server configured as `mcp-remote@latest
+    # https://mcp.canva.com/mcp`. OAuth tokens live in mcp-remote's auth cache,
+    # not in Echo `.env` as CANVA_CLIENT_ID / CANVA_CLIENT_SECRET.
+    del env
+    rc, out, err, secs = run(["hermes", "-p", "echo", "mcp", "test", "Canva"], None, 60)
+    combined = out + "\n" + err
+    if rc == 0 and "Connected" in combined and "Tools discovered" in combined:
         status = "ok"
-        summary = "Canva Connect smoke passed"
-        evidence = redact(out, 320)
+        summary = "Canva MCP smoke passed"
+        evidence = redact(combined, 420)
         remediation = ""
     else:
-        missing_secret = "Missing CANVA_CLIENT_ID" in (err + out)
-        status = "warn" if missing_secret else "fail"
-        summary = "Canva not wired in Echo profile" if missing_secret else "Canva smoke failed"
-        evidence = redact(err or out, 360)
-        remediation = "If Echo needs Canva API access, add CANVA_CLIENT_ID/CANVA_CLIENT_SECRET to Echo .env and run the Canva PKCE flow; until then use browser/manual Canva, not agent API calls."
-    add_check(checks, id="echo-canva", agent="Echo", app="Canva", account="Echo profile", operation="canva_oauth.py smoke", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
+        lower = combined.lower()
+        status = "warn" if ("enospc" in lower or "no space left on device" in lower or "oauth" in lower or "auth" in lower) else "fail"
+        if "enospc" in lower or "no space left on device" in lower:
+            summary = "Canva MCP auth cache hit disk-space error"
+            remediation = "Disk is currently the first thing to check, then rerun `hermes -p echo mcp test Canva`; if it passes, restart Echo so the running session reconnects."
+        elif "oauth" in lower or "auth" in lower:
+            summary = "Canva MCP OAuth needs refresh"
+            remediation = "Run `hermes -p echo mcp login Canva` only if the live MCP test still fails; Canva auth is mcp-remote OAuth cache, not Echo .env secrets."
+        else:
+            summary = "Canva MCP smoke failed"
+            remediation = "Run `hermes -p echo mcp test Canva` and repair the MCP/mcp-remote path before treating this as a missing credential issue."
+        evidence = redact(combined, 420)
+    add_check(checks, id="echo-canva", agent="Echo", app="Canva", account="Echo profile", operation="hermes -p echo mcp test Canva", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
 
 
 def check_github(checks: list[Check]) -> None:
@@ -1221,9 +1230,9 @@ def repair_queue(checks: list[Check], morning: dict[str, Any] | None = None) -> 
         },
         "echo-canva": {
             "priority": 80,
-            "investigation": "Echo Canva API credentials are absent. This is optional unless Jacqueline/Echo has an active workflow requiring Canva API access.",
-            "recommended_action": "Do not spend repair time here today unless Echo needs Canva. If needed, collect Canva app credentials and run the PKCE OAuth setup behind an approval gate.",
-            "feedback_loop": "Move optional integrations into an 'optional capability gap' bucket so they do not pollute the daily repair queue.",
+            "investigation": "Echo Canva access is MCP-based: `mcp-remote@latest https://mcp.canva.com/mcp` with OAuth tokens in mcp-remote's auth cache, not static CANVA_CLIENT_ID/CANVA_CLIENT_SECRET values in Echo `.env`. Prior not-connected signals may reflect stale running-session state after an earlier ENOSPC token/cache write failure.",
+            "recommended_action": "Use `hermes -p echo mcp test Canva` as the source-of-truth smoke. If it connects, mark Canva healthy and restart Echo only if the running session still lacks the tools; if it fails with ENOSPC, free/verify disk and rerun; if OAuth fails, run `hermes -p echo mcp login Canva` behind the normal auth-change gate.",
+            "feedback_loop": "Health should smoke the MCP connection and auth-cache path directly, plus classify stale session/cache errors separately from missing .env credentials.",
         },
     }
 
