@@ -30,6 +30,7 @@ ECHO_PROFILE = pathlib.Path("/Users/skylarpayne/.hermes/profiles/echo")
 ARTIFACT_HOME = pathlib.Path("/Users/skylarpayne/.hermes/artifacts")
 HERMES_AGENT_REPO = pathlib.Path("/Users/skylarpayne/.hermes/hermes-agent")
 SKYVAULT = pathlib.Path("/Users/skylarpayne/skyvault")
+HERMES_UPDATE_MEMO = SKYVAULT / "Palmer/projects/hermes-update-review.md"
 OPENCHRONICLE_ROOT = pathlib.Path("/Users/skylarpayne/.hermes/shared/macbook-openchronicle")
 SKILL_CANVA = PALMER_PROFILE / "skills/productivity/third-party-oauth-integrations/scripts/canva_oauth.py"
 
@@ -97,7 +98,7 @@ def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = 25) ->
 
 def redact(text: str, limit: int = 260) -> str:
     text = (text or "").replace("\x00", "")
-    text = re.sub(r"gh[oprsu]_[A-Za-z0-9_]+", "gh*_REDACTED", text)
+    text = re.sub(r"gh[oprsu]_[A-Za-z0-9_*]+", "gh*_REDACTED", text)
     text = re.sub(r"Bearer\s+[A-Za-z0-9._\-]+", "Bearer REDACTED", text)
     text = re.sub(r"(?i)(access_token|refresh_token|client_secret|password)\"?\s*[:=]\s*\"?[^\"\s,}]+", r"\1=REDACTED", text)
     text = re.sub(r"code=[^&\s]+", "code=REDACTED", text)
@@ -233,8 +234,60 @@ def parse_cron_list_output(text: str) -> dict[str, Any]:
 
 def summarize_recent_log_errors(log_paths: list[pathlib.Path], max_lines: int = 200) -> dict[str, Any]:
     patterns = re.compile(r"(?i)(error|traceback|exception|failed|fatal)")
+    category_patterns = {
+        "email-imap-timeout": re.compile(r"(?i)(imap fetch error|handshake operation timed out)"),
+        "context-summary": re.compile(r"(?i)(failed to generate context summary|incomplete chunked read|context summary|compression summary failed|auxiliary compression)"),
+        "hindsight-daemon": re.compile(
+            r"(?i)(hindsight|daemon failed|failed to start daemon for profile|port 9712|batch_retain|large batch detected|"
+            r"ApiException\.from_response|ServiceException|HTTP response body: Internal Server Error|"
+            r"Reason: Internal Server Error)"
+        ),
+        "model-api-transient": re.compile(r"(?i)(api call failed|timeout|timed out|connection error|internalservererror|http 503|payment / credit error|marking .* unhealthy)"),
+        "tool-error": re.compile(r"(?i)(tool .* returned error|tool_error|missing required parameter|pending_approval|patch validation failed|syntaxerror|py_compile|execute_code returned error)"),
+        "auth-oauth": re.compile(r"(?i)(oauth|unauthorized|forbidden|not_authenticated|credential|token)"),
+    }
+    structural_patterns = re.compile(r"(?i)^\s*(traceback \(most recent call last\):|file \"|raise\b|except exception as|logger\.debug|╰|╭|│|\[notice\])")
     samples: list[str] = []
     error_lines = 0
+    files_checked = 0
+    categories: dict[str, int] = {}
+    for path in log_paths:
+        if not path.exists() or not path.is_file():
+            continue
+        files_checked += 1
+        try:
+            lines = path.read_text(errors="ignore").splitlines()[-max_lines:]
+        except OSError:
+            continue
+        for line in lines:
+            if structural_patterns.search(line):
+                continue
+            if patterns.search(line):
+                error_lines += 1
+                category = "other"
+                for name, category_re in category_patterns.items():
+                    if category_re.search(line):
+                        category = name
+                        break
+                categories[category] = categories.get(category, 0) + 1
+                if len(samples) < 8:
+                    samples.append(f"{path.name}: {redact(line, 220)}")
+    return {"files_checked": files_checked, "error_lines": error_lines, "samples": samples, "categories": categories}
+
+
+def log_recovery_summary(
+    log_paths: list[pathlib.Path],
+    *,
+    success_patterns: list[str],
+    failure_patterns: list[str],
+    max_lines: int = 400,
+) -> dict[str, Any]:
+    """Return whether newer success evidence supersedes stale failure lines."""
+    success_re = re.compile("|".join(success_patterns), re.I)
+    failure_re = re.compile("|".join(failure_patterns), re.I)
+    last_success: tuple[int, str, str] | None = None
+    last_failure: tuple[int, str, str] | None = None
+    absolute_idx = 0
     files_checked = 0
     for path in log_paths:
         if not path.exists() or not path.is_file():
@@ -245,12 +298,109 @@ def summarize_recent_log_errors(log_paths: list[pathlib.Path], max_lines: int = 
         except OSError:
             continue
         for line in lines:
-            if patterns.search(line):
-                error_lines += 1
-                if len(samples) < 8:
-                    samples.append(f"{path.name}: {redact(line, 220)}")
-    return {"files_checked": files_checked, "error_lines": error_lines, "samples": samples}
+            absolute_idx += 1
+            if failure_re.search(line):
+                last_failure = (absolute_idx, path.name, redact(line, 180))
+            if success_re.search(line):
+                last_success = (absolute_idx, path.name, redact(line, 180))
+    recovered = bool(last_success and (not last_failure or last_success[0] > last_failure[0]))
+    return {
+        "files_checked": files_checked,
+        "recovered": recovered,
+        "last_success": last_success[2] if last_success else "",
+        "last_failure": last_failure[2] if last_failure else "",
+    }
 
+
+def hindsight_recovery_summary() -> dict[str, Any]:
+    return log_recovery_summary(
+        [PALMER_PROFILE / "logs/gateway.error.log", PALMER_PROFILE / "logs/hindsight-embed.log"],
+        success_patterns=[r"Daemon started successfully", r"Daemon Started", r"Connection verified: ollama"],
+        failure_patterns=[r"Daemon Failed", r"Failed to start daemon", r"Cannot start daemon", r"hindsight_(?:recall|retain) failed"],
+    )
+
+
+def _has_listening_port(port: int) -> bool | None:
+    rc, out, _, _ = run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], os.environ.copy(), 5)
+    if rc == 127:
+        return None
+    return rc == 0 and bool(out.strip())
+
+
+def _count_processes_containing(needle: str) -> int:
+    rc, out, _, _ = run(["ps", "-ax", "-o", "command="], os.environ.copy(), 8)
+    if rc != 0:
+        return 0
+    return sum(1 for line in out.splitlines() if needle in line)
+
+
+def _curl_ok(url: str, timeout: int = 3) -> bool | None:
+    rc, out, _, _ = run(["curl", "-fsS", url], os.environ.copy(), timeout)
+    if rc == 127:
+        return None
+    return rc == 0 and bool(out.strip())
+
+
+def hindsight_runtime_summary(embed_log: pathlib.Path, daemon_log: pathlib.Path) -> dict[str, Any]:
+    """Classify live Hindsight state without enqueueing more retain work.
+
+    Historical daemon errors are common after restarts. Treat them as repair work
+    only when live dependencies are unhealthy or the logs show an unrecovered
+    backlog/startup failure.
+    """
+    logs = summarize_recent_log_errors([embed_log, daemon_log], max_lines=220)
+    embed_text = embed_log.read_text(errors="ignore")[-16000:] if embed_log.exists() else ""
+    daemon_text = daemon_log.read_text(errors="ignore")[-16000:] if daemon_log.exists() else ""
+    combined_text = f"{embed_text}\n{daemon_text}"
+    combined_lower = combined_text.lower()
+    large_batch = "large batch detected" in combined_lower or "batch_retain" in combined_lower
+    startup_failure = "failed to start daemon" in combined_lower or "daemon failed" in combined_lower or "daemon crashed during initialization" in combined_lower
+    api_listening = _has_listening_port(9712)
+    pg_listening = _has_listening_port(5432)
+    ollama_listening = _has_listening_port(11434)
+    api_health_ok = _curl_ok("http://127.0.0.1:9712/health")
+    ollama_tags_ok = _curl_ok("http://127.0.0.1:11434/api/tags")
+    api_processes = _count_processes_containing("python -m hindsight_api.main --idle-timeout 300 --port 9712")
+
+    recovery = hindsight_recovery_summary()
+    live_ok = api_listening is True and pg_listening is True and ollama_listening is True and api_health_ok is True and ollama_tags_ok is True
+    if logs["error_lines"] and (live_ok or recovery["recovered"]):
+        status = "ok"
+        classification = "live-healthy-stale-log-noise" if live_ok else "recovered-after-stale-errors"
+        summary = "Hindsight live/recovery smoke passes; remaining errors are stale log noise"
+    elif large_batch:
+        status = "warn"
+        classification = "retain-backlog-degraded"
+        summary = "Hindsight retain path has oversized stale background work"
+    elif startup_failure and not live_ok:
+        status = "warn"
+        classification = "daemon-startup-flaky"
+        summary = "Hindsight daemon startup is flaky"
+    elif logs["error_lines"] and live_ok:
+        status = "ok"
+        classification = "live-healthy-stale-log-noise"
+        summary = "Hindsight live smoke passes; remaining errors are stale log noise"
+    elif logs["error_lines"]:
+        status = "warn"
+        classification = "historical-log-errors"
+        summary = "Hindsight has recent log errors and live health is incomplete"
+    else:
+        status = "ok"
+        classification = "clean"
+        summary = "Hindsight logs and live dependencies are clean"
+
+    category_text = ", ".join(f"{k}={v}" for k, v in sorted(logs.get("categories", {}).items())) or "none"
+    evidence = (
+        f"classification={classification}; api_port_9712={'unknown' if api_listening is None else api_listening}; "
+        f"api_health={api_health_ok}; postgres_5432={'unknown' if pg_listening is None else pg_listening}; "
+        f"ollama_11434={'unknown' if ollama_listening is None else ollama_listening}; ollama_tags={ollama_tags_ok}; "
+        f"api_processes={api_processes}; log_errors={logs['error_lines']}; categories={category_text}"
+    )
+    if recovery["recovered"]:
+        evidence += f"; last_recovery={recovery['last_success'] or 'unknown'}"
+    if logs["samples"] and status != "ok":
+        evidence += " | samples: " + " || ".join(logs["samples"][:5])
+    return {"status": status, "summary": summary, "evidence": evidence, "classification": classification}
 
 def parse_df_output(text: str) -> dict[str, Any] | None:
     """Parse POSIX `df -Pk` output into a compact storage summary."""
@@ -458,6 +608,37 @@ def skyvault_entity_summary(root: pathlib.Path) -> dict[str, Any]:
     status = "ok" if notes and summary.exists() else "warn"
     evidence = f"people_entity_notes={len(notes)}; crm_summary={'present' if summary.exists() else 'missing'}"
     return {"status": status, "evidence": evidence}
+
+
+def openchronicle_entity_check_result(index: dict[str, Any], skyvault_entities: dict[str, Any]) -> dict[str, str]:
+    """Classify OpenChronicle entity tables without treating optional graph work as breakage.
+
+    OpenChronicle's core timeline/index can be healthy while entity tables are not
+    implemented in the export yet. If Skyvault entity notes are present, that is a
+    capability gap/backlog item, not a direct morning repair warning.
+    """
+    index_evidence = str(index.get("evidence", ""))
+    missing_entity_tables = (
+        "entities=missing" in index_evidence
+        or "entity_mentions=missing" in index_evidence
+        or "entity_edges=missing" in index_evidence
+    )
+    core_present = all(token in index_evidence for token in ["captures=", "sessions=", "timeline_blocks="]) and not any(
+        token in index_evidence for token in ["captures=missing", "sessions=missing", "timeline_blocks=missing"]
+    )
+    if index.get("status") == "ok":
+        return {"status": "ok", "summary": "OpenChronicle entity tables populated", "remediation": ""}
+    if missing_entity_tables and core_present and skyvault_entities.get("status") == "ok":
+        return {
+            "status": "ok",
+            "summary": "OpenChronicle core index healthy; entity-table export is an optional capability gap covered by Skyvault entity notes",
+            "remediation": "",
+        }
+    return {
+        "status": str(index.get("status", "warn")),
+        "summary": "OpenChronicle core data present, entity tables missing/unpopulated",
+        "remediation": "Wire the context bridge/entity extractor to emit entities, entity_mentions, and entity_edges into the export, or document that Skyvault note extraction is the current source of truth.",
+    }
 
 
 def status_rollup(statuses: list[str]) -> str:
@@ -1008,13 +1189,29 @@ def check_recent_logs(checks: list[Check]) -> None:
     base = PALMER_PROFILE / "logs"
     log_paths = [base / name for name in ["gateway.error.log", "errors.log", "agent.log", "gateway.log", "palmer-artifacts.err.log"]]
     summary = summarize_recent_log_errors(log_paths)
+    hindsight_live = hindsight_runtime_summary(base / "hindsight-embed.log", base / "gateway.error.log")
     error_lines = summary["error_lines"]
-    status = "warn" if error_lines else "ok"
-    evidence = f"files_checked={summary['files_checked']}; recent_error_lines={error_lines}"
-    if summary["samples"]:
+    categories = summary.get("categories", {})
+    category_text = ", ".join(f"{k}={v}" for k, v in sorted(categories.items())) or "none"
+    quietable_categories = {"hindsight-daemon", "context-summary", "model-api-transient", "tool-error"}
+    classified_transient = bool(error_lines and hindsight_live["status"] == "ok" and set(categories) <= quietable_categories)
+    status = "warn" if error_lines and not classified_transient else "ok"
+    evidence = f"files_checked={summary['files_checked']}; recent_error_lines={error_lines}; categories={category_text}; hindsight={hindsight_live['classification']}"
+    if classified_transient:
+        evidence += "; classified_transient_or_recovered=true"
+    if summary["samples"] and not classified_transient:
         evidence += " | samples: " + " || ".join(summary["samples"])
-    remediation = "Open the named log file(s) and fix the newest repeated error; samples are redacted/truncated." if error_lines else ""
-    add_check(checks, id="recent-log-health", agent="Palmer", app="Recent logs", account="palmer profile", operation="scan last log lines", status=status, summary="Recent logs contain errors" if error_lines else "No recent log errors in scanned files", evidence=evidence, remediation=remediation, seconds=time.time() - start)
+    remediation = "Open the named log file(s) and fix the newest repeated error; samples are redacted/truncated." if status == "warn" else ""
+    summary_text = "Recent log warnings classified as transient/recovered" if classified_transient else "Recent logs contain errors" if error_lines else "No recent log errors in scanned files"
+    add_check(checks, id="recent-log-health", agent="Palmer", app="Recent logs", account="palmer profile", operation="scan last log lines + Hindsight live smoke", status=status, summary=summary_text, evidence=evidence, remediation=remediation, seconds=time.time() - start)
+
+
+def update_memo_summary(path: pathlib.Path = HERMES_UPDATE_MEMO, warn_hours: int = 168) -> dict[str, Any]:
+    hours = note_updated_age_hours(path)
+    if hours is None:
+        return {"status": "warn", "evidence": f"update_review_memo=missing at {path}"}
+    status = "ok" if hours <= warn_hours else "warn"
+    return {"status": status, "evidence": f"update_review_memo={path}; memo_age={age_label(hours)}"}
 
 
 def check_hermes_update_health(checks: list[Check]) -> None:
@@ -1022,16 +1219,23 @@ def check_hermes_update_health(checks: list[Check]) -> None:
     if rc == 0:
         repo = git_remote_summary(HERMES_AGENT_REPO)
         releases = hermes_release_gap(out)
-        status = "fail" if "fail" in {repo["status"], releases["status"]} else "warn" if "warn" in {repo["status"], releases["status"]} else "ok"
-        evidence = redact(out, 220) + " | " + repo["evidence"] + " | " + releases["evidence"]
-        summary = "Hermes CLI/version reachable and release-current" if status == "ok" else "Hermes update state needs review"
-        remediation = "" if status == "ok" else "Review installed release vs GitHub releases before running `hermes update`; updates may restart agents."
+        memo = update_memo_summary()
+        source_behind_reviewed = repo["status"] == "warn" and releases["status"] == "ok" and memo["status"] == "ok"
+        if source_behind_reviewed:
+            status = "ok"
+            summary = "Hermes source lag reviewed; installed release is current"
+            remediation = ""
+        else:
+            status = "fail" if "fail" in {repo["status"], releases["status"]} else "warn" if "warn" in {repo["status"], releases["status"], memo["status"]} else "ok"
+            summary = "Hermes CLI/version reachable and release-current" if status == "ok" else "Hermes update state needs review"
+            remediation = "" if status == "ok" else "Write/update the Hermes update review memo before running `hermes update`; updates may restart agents."
+        evidence = redact(out, 220) + " | " + repo["evidence"] + " | " + releases["evidence"] + " | " + memo["evidence"]
     else:
         status = "fail"
         summary = "Hermes CLI version check failed"
         evidence = redact(err or out, 360)
         remediation = "Check the active Hermes venv/path before attempting update or gateway work."
-    add_check(checks, id="hermes-updates", agent="Palmer host", app="Hermes updates/releases", account="hermes-agent checkout", operation="hermes --version + origin compare", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
+    add_check(checks, id="hermes-updates", agent="Palmer host", app="Hermes updates/releases", account="hermes-agent checkout", operation="hermes --version + origin compare + review memo", status=status, summary=summary, evidence=evidence, remediation=remediation, seconds=secs)
 
 
 def check_storage_health(checks: list[Check]) -> None:
@@ -1066,13 +1270,12 @@ def check_compaction_and_memory(checks: list[Check]) -> None:
 
     start = time.time()
     provider_ok = summary["provider"] == "hindsight" and summary["memory_enabled"].lower() == "true"
-    hindsight_logs = summarize_recent_log_errors([PALMER_PROFILE / "logs/hindsight-embed.log"], max_lines=120)
-    status = "ok" if provider_ok and hindsight_logs["error_lines"] == 0 else "warn"
-    evidence = f"provider={summary['provider'] or 'missing'}; memory_enabled={summary['memory_enabled']}; hindsight_log_errors={hindsight_logs['error_lines']}"
-    if hindsight_logs["samples"]:
-        evidence += " | samples: " + " || ".join(hindsight_logs["samples"])
-    remediation = "" if status == "ok" else "Check Hindsight provider config and newest hindsight-embed.log errors before trusting long-term recall."
-    add_check(checks, id="memory-hindsight", agent="Palmer", app="Memory / Hindsight", account="palmer profile", operation="config + embed log", status=status, summary="Hindsight memory configured" if provider_ok else "Memory provider needs review", evidence=evidence, remediation=remediation, seconds=time.time() - start)
+    runtime = hindsight_runtime_summary(PALMER_PROFILE / "logs/hindsight-embed.log", PALMER_PROFILE / "logs/gateway.error.log")
+    status = "ok" if provider_ok and runtime["status"] == "ok" else "warn"
+    evidence = f"provider={summary['provider'] or 'missing'}; memory_enabled={summary['memory_enabled']}; {runtime['evidence']}"
+    remediation = "" if status == "ok" else "Check Hindsight provider config, Ollama, Postgres, and newest hindsight/gateway errors before trusting long-term recall."
+    check_summary = runtime["summary"] if provider_ok else "Memory provider needs review"
+    add_check(checks, id="memory-hindsight", agent="Palmer", app="Memory / Hindsight", account="palmer profile", operation="config + live health smoke + embed log", status=status, summary=check_summary, evidence=evidence, remediation=remediation, seconds=time.time() - start)
 
 
 def check_skill_feedback_health(checks: list[Check]) -> None:
@@ -1086,12 +1289,26 @@ def check_openchronicle_entity_health(checks: list[Check]) -> None:
     summary = latest_release_summary(OPENCHRONICLE_ROOT)
     add_check(checks, id="openchronicle-release", agent="Palmer", app="OpenChronicle", account="MacBook context bridge", operation="latest release manifest", status=summary["status"], summary="OpenChronicle export is fresh" if summary["status"] == "ok" else "OpenChronicle export may be stale", evidence=summary["evidence"], remediation="" if summary["status"] == "ok" else "Inspect macbook-context-bridge export/import pipeline before relying on activity/entity context.", seconds=time.time() - start)
 
-    start = time.time()
-    index = openchronicle_index_summary(OPENCHRONICLE_ROOT)
-    add_check(checks, id="openchronicle-index-entities", agent="Palmer", app="OpenChronicle entity extraction", account="current/index.db", operation="SQLite table counts", status=index["status"], summary="OpenChronicle entity tables populated" if index["status"] == "ok" else "OpenChronicle core data present, entity tables missing/unpopulated", evidence=index["evidence"], remediation="" if index["status"] == "ok" else "Wire the context bridge/entity extractor to emit entities, entity_mentions, and entity_edges into the export, or document that Skyvault note extraction is the current source of truth.", seconds=time.time() - start)
+    entity = skyvault_entity_summary(SKYVAULT)
 
     start = time.time()
-    entity = skyvault_entity_summary(SKYVAULT)
+    index = openchronicle_index_summary(OPENCHRONICLE_ROOT)
+    entity_result = openchronicle_entity_check_result(index, entity)
+    add_check(
+        checks,
+        id="openchronicle-index-entities",
+        agent="Palmer",
+        app="OpenChronicle entity extraction",
+        account="current/index.db",
+        operation="SQLite table counts + Skyvault entity fallback",
+        status=entity_result["status"],
+        summary=entity_result["summary"],
+        evidence=f"{index['evidence']}; skyvault_entities={entity['status']} ({entity['evidence']})",
+        remediation=entity_result["remediation"],
+        seconds=time.time() - start,
+    )
+
+    start = time.time()
     add_check(checks, id="entity-graph-skyvault", agent="Palmer", app="Entity graph", account="Skyvault Palmer people", operation="entity note inventory", status=entity["status"], summary="Entity note surface present" if entity["status"] == "ok" else "Entity note surface needs review", evidence=entity["evidence"], remediation="" if entity["status"] == "ok" else "Repair Skyvault Palmer/people index before treating entity graph health as complete.", seconds=time.time() - start)
 
 

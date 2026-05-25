@@ -13,6 +13,9 @@ from agent_health_dashboard import (
     extract_markdown_items,
     kanban_readiness_summary,
     latest_release_summary,
+    log_recovery_summary,
+    hindsight_runtime_summary,
+    openchronicle_entity_check_result,
     openchronicle_index_summary,
     parse_cron_list_output,
     parse_df_output,
@@ -22,6 +25,7 @@ from agent_health_dashboard import (
     repair_queue,
     skill_usage_summary,
     summarize_recent_log_errors,
+    update_memo_summary,
 )
 
 
@@ -207,16 +211,95 @@ def test_parse_cron_list_output_counts_active_paused_and_failed_runs():
 def test_summarize_recent_log_errors_redacts_and_limits(tmp_path):
     log = tmp_path / "gateway.error.log"
     log.write_text(
-        "INFO fine\nERROR failed with Bearer secret-token-value\nTraceback: boom\nWARN not counted\n",
+        "INFO fine\nERROR failed with Bearer secret-token-value\nTraceback: boom\nERROR gh auth Token: gho_************************************\nWARN not counted\n",
         encoding="utf-8",
     )
 
     summary = summarize_recent_log_errors([log], max_lines=10)
 
-    assert summary["error_lines"] == 2
+    assert summary["error_lines"] == 3
     assert summary["files_checked"] == 1
     assert "Bearer REDACTED" in summary["samples"][0]
+    assert "gh*_REDACTED" in summary["samples"][2]
     assert "secret-token-value" not in str(summary)
+    assert "gho_" not in str(summary)
+
+
+def test_summarize_recent_log_errors_categorizes_hindsight_api_failures(tmp_path):
+    log = tmp_path / "gateway.error.log"
+    log.write_text(
+        "hindsight_client_api.exceptions.ServiceException: (500)\n"
+        "Reason: Internal Server Error\n"
+        "HTTP response body: Internal Server Error\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_recent_log_errors([log], max_lines=10)
+
+    assert summary["error_lines"] == 3
+    assert summary["categories"] == {"hindsight-daemon": 3}
+
+
+def test_log_recovery_summary_marks_newer_success_as_recovered(tmp_path):
+    log = tmp_path / "hindsight-embed.log"
+    log.write_text(
+        "Daemon Failed (Timeout)\nConnection verified: ollama\nDaemon started successfully\n",
+        encoding="utf-8",
+    )
+
+    summary = log_recovery_summary(
+        [log],
+        success_patterns=[r"Daemon started successfully", r"Connection verified: ollama"],
+        failure_patterns=[r"Daemon Failed"],
+    )
+
+    assert summary["recovered"] is True
+    assert "Daemon started successfully" in summary["last_success"]
+
+
+def test_update_memo_summary_marks_fresh_review_ok(tmp_path):
+    memo = tmp_path / "hermes-update-review.md"
+    memo.write_text("---\nupdated: 2099-05-25 10:04\n---\n# Hermes update review\n", encoding="utf-8")
+
+    summary = update_memo_summary(memo)
+
+    assert summary["status"] == "ok"
+    assert "memo_age" in summary["evidence"]
+
+
+def test_hindsight_runtime_summary_quiets_stale_errors_when_live_smoke_passes(tmp_path, monkeypatch):
+    embed_log = tmp_path / "hindsight-embed.log"
+    daemon_log = tmp_path / "gateway.error.log"
+    embed_log.write_text("ERROR hindsight daemon failed yesterday\n", encoding="utf-8")
+    daemon_log.write_text("hindsight_client_api.exceptions.ServiceException: (500)\n", encoding="utf-8")
+    monkeypatch.setattr(ahd, "_has_listening_port", lambda port: True)
+    monkeypatch.setattr(ahd, "_curl_ok", lambda url: True)
+    monkeypatch.setattr(ahd, "_count_processes_containing", lambda needle: 1)
+    monkeypatch.setattr(ahd, "hindsight_recovery_summary", lambda: {"recovered": False, "last_success": "", "last_failure": ""})
+
+    summary = hindsight_runtime_summary(embed_log, daemon_log)
+
+    assert summary["status"] == "ok"
+    assert summary["classification"] == "live-healthy-stale-log-noise"
+    assert "samples:" not in summary["evidence"]
+
+
+def test_hindsight_runtime_summary_warns_when_live_health_is_incomplete(tmp_path, monkeypatch):
+    embed_log = tmp_path / "hindsight-embed.log"
+    daemon_log = tmp_path / "gateway.error.log"
+    embed_log.write_text("Daemon failed to start with Bearer secret-token-value\n", encoding="utf-8")
+    daemon_log.write_text("", encoding="utf-8")
+    monkeypatch.setattr(ahd, "_has_listening_port", lambda port: port != 9712)
+    monkeypatch.setattr(ahd, "_curl_ok", lambda url: False)
+    monkeypatch.setattr(ahd, "_count_processes_containing", lambda needle: 0)
+    monkeypatch.setattr(ahd, "hindsight_recovery_summary", lambda: {"recovered": False, "last_success": "", "last_failure": ""})
+
+    summary = hindsight_runtime_summary(embed_log, daemon_log)
+
+    assert summary["status"] == "warn"
+    assert summary["classification"] == "daemon-startup-flaky"
+    assert "Bearer REDACTED" in summary["evidence"]
+    assert "secret-token-value" not in summary["evidence"]
 
 
 def test_parse_df_output_reports_free_space_percentages():
@@ -295,6 +378,20 @@ def test_openchronicle_index_summary_reports_entity_table_counts(tmp_path):
     assert summary["status"] == "ok"
     assert "captures=1" in summary["evidence"]
     assert "entities=1" in summary["evidence"]
+
+
+def test_openchronicle_entity_check_result_downgrades_missing_tables_when_skyvault_entities_exist():
+    index = {
+        "status": "warn",
+        "evidence": "captures=8163; sessions=382; timeline_blocks=2870; entries=496; extractor_records=377; entities=missing; entity_mentions=missing; entity_edges=missing",
+    }
+    skyvault = {"status": "ok", "evidence": "people_entity_notes=27; crm_summary=present"}
+
+    result = openchronicle_entity_check_result(index, skyvault)
+
+    assert result["status"] == "ok"
+    assert "optional capability gap" in result["summary"]
+    assert result["remediation"] == ""
 
 
 def test_repair_queue_turns_warning_snapshot_into_clearing_actions():
