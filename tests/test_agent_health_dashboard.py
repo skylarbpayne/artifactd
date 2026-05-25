@@ -16,6 +16,7 @@ from agent_health_dashboard import (
     parse_memory_config,
     process_inventory,
     render_html,
+    repair_queue,
     skill_usage_summary,
     summarize_recent_log_errors,
 )
@@ -291,3 +292,77 @@ def test_openchronicle_index_summary_reports_entity_table_counts(tmp_path):
     assert summary["status"] == "ok"
     assert "captures=1" in summary["evidence"]
     assert "entities=1" in summary["evidence"]
+
+
+def test_repair_queue_turns_warning_snapshot_into_clearing_actions():
+    checks = [
+        Check(
+            id="echo-canva",
+            agent="Echo",
+            app="Canva",
+            account="Echo profile",
+            operation="canva_oauth.py smoke",
+            status="warn",
+            summary="Canva not wired in Echo profile",
+            evidence="Missing CANVA_CLIENT_ID and/or CANVA_CLIENT_SECRET in /Users/skylarpayne/.hermes/profiles/echo/.env",
+            remediation="If Echo needs Canva API access, add credentials.",
+        ),
+        Check(
+            id="recent-log-health",
+            agent="Palmer",
+            app="Recent logs",
+            account="palmer profile",
+            operation="scan last log lines",
+            status="warn",
+            summary="Recent logs contain errors",
+            evidence="recent_error_lines=177 | port 9712 is in use by a non-hindsight process",
+            remediation="Open logs.",
+        ),
+        Check(
+            id="hermes-updates",
+            agent="Palmer host",
+            app="Hermes updates/releases",
+            account="hermes-agent checkout",
+            operation="hermes --version + origin compare",
+            status="warn",
+            summary="Hermes update state needs review",
+            evidence="Update available: 170 commits behind; releases_since_installed=0",
+            remediation="Review before update.",
+        ),
+    ]
+
+    queue = repair_queue(checks, {"items": [{"title": "Current priorities note", "status": "warn", "summary": "stale", "next_action": "Refresh it"}]})
+
+    assert [item["id"] for item in queue][:3] == ["recent-log-health", "hermes-updates", "truth-current-priorities-note"]
+    assert queue[0]["recommended_action"].startswith("Run a live Hindsight")
+    assert "optional" in queue_by_id(queue, "echo-canva")["investigation"].lower()
+    assert "Automate" in queue_by_id(queue, "hermes-updates")["feedback_loop"]
+
+
+def test_render_html_surfaces_issue_clearing_board():
+    html = render_html(
+        [
+            Check(
+                id="openchronicle-index-entities",
+                agent="Palmer",
+                app="OpenChronicle entity extraction",
+                account="current/index.db",
+                operation="SQLite table counts",
+                status="warn",
+                summary="OpenChronicle core data present, entity tables missing/unpopulated",
+                evidence="captures=1; entities=missing; entity_mentions=missing; entity_edges=missing",
+                remediation="Wire entity extractor.",
+            )
+        ],
+        "2026-05-25 08:30 PDT",
+        {"gate_rollups": {}, "recommendation": "Repair first.", "first_90_minutes": "Investigate warnings.", "items": [], "kanban": {}, "priority_now": [], "palmer_safe": []},
+    )
+
+    assert "Issue clearing board" in html
+    assert "Investigated finding" in html
+    assert "Automate next" in html
+    assert "OpenChronicle index is readable" in html
+
+
+def queue_by_id(queue, item_id):
+    return next(item for item in queue if item["id"] == item_id)

@@ -1186,6 +1186,97 @@ def rollup(checks: list[Check]) -> dict[str, Any]:
     return {"overall": overall, "label": label, "counts": counts}
 
 
+def repair_queue(checks: list[Check], morning: dict[str, Any] | None = None) -> list[dict[str, str | int]]:
+    """Convert raw warnings into a small operator queue.
+
+    Health dashboards are useful only if the next move is obvious. This layer is
+    intentionally opinionated: separate optional capability gaps from real repair
+    work, name the likely finding, and specify what should be automated so the
+    same warning gets quieter over time.
+    """
+    templates: dict[str, dict[str, str | int]] = {
+        "recent-log-health": {
+            "priority": 10,
+            "investigation": "Log warning is dominated by Hindsight daemon churn / port 9712 conflict signatures. This may be stale log noise unless the live Hindsight smoke fails.",
+            "recommended_action": "Run a live Hindsight recall/retain smoke plus a port-owner check. If smoke passes, downgrade stale log samples; if it fails, restart/repair the Hindsight daemon owner before trusting memory.",
+            "feedback_loop": "Automate a Hindsight live-smoke check and error aging so old gateway log lines stop creating fake daily repair work.",
+        },
+        "memory-hindsight": {
+            "priority": 11,
+            "investigation": "Hindsight config is present but recent embed/writer errors can make recall look flaky.",
+            "recommended_action": "Run recall + retain smoke before assigning memory-heavy work; repair daemon startup only if the live smoke fails.",
+            "feedback_loop": "Automate live recall/retain smoke and only page when the actual memory operation fails, not merely when a historical log contains errors.",
+        },
+        "hermes-updates": {
+            "priority": 20,
+            "investigation": "Hermes checkout is behind origin, but the installed public release is not necessarily behind. This is review work, not an update-now alarm.",
+            "recommended_action": "Write a compact Hermes update change memo from the new commits/release notes; update only if it contains fixes that matter for current Palmer/Echo reliability.",
+            "feedback_loop": "Automate a weekly Hermes update memo with commit buckets and a go/no-go recommendation instead of showing raw commit lag every morning.",
+        },
+        "openchronicle-index-entities": {
+            "priority": 30,
+            "investigation": "OpenChronicle index is readable and core capture/session/timeline data exists; the warning is specifically that entity tables are missing or empty.",
+            "recommended_action": "Decide whether OpenChronicle entity extraction is a required health gate. If yes, implement/populate entities/entity_mentions/entity_edges; if no, mark this as a capability gap and use Skyvault entity notes as the current truth.",
+            "feedback_loop": "Automate stage-level OpenChronicle checks: export freshness, core table counts, entity-table counts, and extractor last-run evidence separately.",
+        },
+        "echo-canva": {
+            "priority": 80,
+            "investigation": "Echo Canva API credentials are absent. This is optional unless Jacqueline/Echo has an active workflow requiring Canva API access.",
+            "recommended_action": "Do not spend repair time here today unless Echo needs Canva. If needed, collect Canva app credentials and run the PKCE OAuth setup behind an approval gate.",
+            "feedback_loop": "Move optional integrations into an 'optional capability gap' bucket so they do not pollute the daily repair queue.",
+        },
+    }
+
+    queue: list[dict[str, str | int]] = []
+    for check in checks:
+        if check.status not in {"warn", "fail", "unknown"}:
+            continue
+        template = templates.get(
+            check.id,
+            {
+                "priority": 50 if check.status == "warn" else 5,
+                "investigation": f"{check.summary}. Evidence: {check.evidence}",
+                "recommended_action": check.remediation or "Run the smallest live smoke that proves whether this is a real current failure.",
+                "feedback_loop": "If this recurs, add a targeted smoke/check so future runs classify root cause instead of repeating the same generic warning.",
+            },
+        )
+        queue.append(
+            {
+                "id": check.id,
+                "status": check.status,
+                "title": f"{check.agent} / {check.app}",
+                "summary": check.summary,
+                "priority": int(template["priority"]),
+                "investigation": str(template["investigation"]),
+                "recommended_action": str(template["recommended_action"]),
+                "feedback_loop": str(template["feedback_loop"]),
+            }
+        )
+
+    morning = morning or {}
+    for item in morning.get("items", []):
+        if item.get("status") not in {"warn", "fail", "unknown"}:
+            continue
+        title = str(item.get("title", "Morning readiness item"))
+        if title == "Base agent functionality/auth":
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "morning-item"
+        queue.append(
+            {
+                "id": f"truth-{slug}",
+                "status": str(item.get("status", "warn")),
+                "title": title,
+                "summary": str(item.get("summary", "")),
+                "priority": 25,
+                "investigation": str(item.get("evidence", "Truth/context source needs refresh.")),
+                "recommended_action": str(item.get("next_action", "Refresh the source of truth and rerun the dashboard.")),
+                "feedback_loop": "Automate freshness/writeback checks so stale truth becomes a Palmer repair action, not ambient anxiety for Skylar.",
+            }
+        )
+
+    return sorted(queue, key=lambda item: (int(item["priority"]), STATUS_ORDER.get(str(item["status"]), 9), str(item["id"])))
+
+
 def esc(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
@@ -1204,6 +1295,7 @@ def render_html(checks: list[Check], generated_at: str, morning: dict[str, Any] 
     by_agent: dict[str, list[Check]] = {}
     for check in sorted(checks, key=lambda c: (c.agent, STATUS_ORDER.get(c.status, 9), c.app, c.account)):
         by_agent.setdefault(check.agent, []).append(check)
+    repairs = repair_queue(checks, morning)
 
     def badge(status: str) -> str:
         return f'<span class="badge {esc(status)}">{esc(status.upper())}</span>'
@@ -1271,7 +1363,20 @@ def render_html(checks: list[Check], generated_at: str, morning: dict[str, Any] 
         ]
     )
 
-    json_blob = esc(json.dumps({"generated_at": generated_at, "summary": summary, "morning_rounds": morning, "checks": [asdict(c) for c in checks]}, indent=2))
+    def repair_card(item: dict[str, Any]) -> str:
+        return f"""
+        <article class="repair {esc(item.get('status', 'unknown'))}" id="repair-{esc(item.get('id', 'unknown'))}">
+          <div class="check-head"><strong>{esc(item.get('title', 'Untitled'))}</strong>{badge(str(item.get('status', 'unknown')))}</div>
+          <div class="summary">{esc(item.get('summary', ''))}</div>
+          <p><strong>Investigated finding:</strong> {esc(item.get('investigation', ''))}</p>
+          <p><strong>Recommended action:</strong> {esc(item.get('recommended_action', ''))}</p>
+          <p><strong>Automate next:</strong> {esc(item.get('feedback_loop', ''))}</p>
+        </article>
+        """
+
+    repair_cards = "".join(repair_card(item) for item in repairs) or "<p class=\"muted\">No repairs to clear. Keep the loop boring.</p>"
+
+    json_blob = esc(json.dumps({"generated_at": generated_at, "summary": summary, "morning_rounds": morning, "repair_queue": repairs, "checks": [asdict(c) for c in checks]}, indent=2))
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1328,13 +1433,18 @@ def render_html(checks: list[Check], generated_at: str, morning: dict[str, Any] 
     .morning-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }}
     .morning-item {{ background: rgba(15,23,42,.88); border: 1px solid var(--line); border-left: 5px solid var(--unknown); border-radius: 18px; padding: 16px; }}
     .morning-item.ok {{ border-left-color: var(--ok); }} .morning-item.warn {{ border-left-color: var(--warn); }} .morning-item.fail {{ border-left-color: var(--fail); }}
+    .repair-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }}
+    .repair {{ background: rgba(15,23,42,.9); border: 1px solid var(--line); border-left: 5px solid var(--unknown); border-radius: 18px; padding: 16px; }}
+    .repair.ok {{ border-left-color: var(--ok); }} .repair.warn {{ border-left-color: var(--warn); }} .repair.fail {{ border-left-color: var(--fail); }}
+    .repair p {{ margin: 10px 0 0; font-size: 13px; line-height: 1.45; }}
+    .repair strong {{ color: #e0f2fe; }}
     .queues {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }}
     .queue ul {{ padding-left: 18px; }}
     .queue li {{ margin: 8px 0; color: var(--muted); font-size: 13px; }}
     .playbook li {{ margin: 8px 0; color: var(--muted); }}
     .incident li {{ margin: 9px 0; color: var(--muted); }}
     .footer {{ margin-top: 22px; color: var(--muted); font-size: 13px; }}
-    @media (max-width: 850px) {{ .hero, .checks, .playbook, .morning-grid, .queues {{ grid-template-columns: 1fr; }} .counts, .gates {{ grid-template-columns: repeat(2,1fr); }} }}
+    @media (max-width: 850px) {{ .hero, .checks, .playbook, .morning-grid, .repair-grid, .queues {{ grid-template-columns: 1fr; }} .counts, .gates {{ grid-template-columns: repeat(2,1fr); }} }}
   </style>
 </head>
 <body>
@@ -1368,6 +1478,14 @@ def render_html(checks: list[Check], generated_at: str, morning: dict[str, Any] 
       </article>
       <div class="morning-grid">{morning_items}</div>
       <div class="queues">{kanban_queues}</div>
+    </section>
+
+    <section class="morning">
+      <article class="panel recommendation">
+        <h2>Issue clearing board</h2>
+        <p class="summary">Warnings are not chores for Skylar. Palmer should first investigate whether each warning is a real current failure, an optional capability gap, stale telemetry, or a truth-refresh item — then either repair it or make the next run smarter.</p>
+      </article>
+      <div class="repair-grid">{repair_cards}</div>
     </section>
 
     {grouped}
@@ -1422,10 +1540,11 @@ python -c 'from pathlib import Path; from artifactd.store import ArtifactStore; 
 
 def write_outputs(checks: list[Check], out_dir: pathlib.Path, generated_at: str) -> None:
     morning = collect_morning_rounds(checks, generated_at)
+    repairs = repair_queue(checks, morning)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "index.html").write_text(render_html(checks, generated_at, morning), encoding="utf-8")
     (out_dir / "health.json").write_text(
-        json.dumps({"generated_at": generated_at, "summary": rollup(checks), "morning_rounds": morning, "checks": [asdict(c) for c in checks]}, indent=2),
+        json.dumps({"generated_at": generated_at, "summary": rollup(checks), "morning_rounds": morning, "repair_queue": repairs, "checks": [asdict(c) for c in checks]}, indent=2),
         encoding="utf-8",
     )
 
