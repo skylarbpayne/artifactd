@@ -31,6 +31,8 @@ ARTIFACT_HOME = pathlib.Path("/Users/skylarpayne/.hermes/artifacts")
 HERMES_AGENT_REPO = pathlib.Path("/Users/skylarpayne/.hermes/hermes-agent")
 SKYVAULT = pathlib.Path("/Users/skylarpayne/skyvault")
 HERMES_UPDATE_MEMO = SKYVAULT / "Palmer/projects/hermes-update-review.md"
+PALMER_EXECUTABLE_QUEUE = SKYVAULT / "Palmer/projects/palmer-executable-queue.md"
+SKYLAR_APPROVAL_QUEUE = SKYVAULT / "Palmer/projects/skylar-approval-needed-queue.md"
 OPENCHRONICLE_ROOT = pathlib.Path("/Users/skylarpayne/.hermes/shared/macbook-openchronicle")
 SKILL_CANVA = PALMER_PROFILE / "skills/productivity/third-party-oauth-integrations/scripts/canva_oauth.py"
 
@@ -238,12 +240,12 @@ def summarize_recent_log_errors(log_paths: list[pathlib.Path], max_lines: int = 
         "email-imap-timeout": re.compile(r"(?i)(imap fetch error|handshake operation timed out)"),
         "context-summary": re.compile(r"(?i)(failed to generate context summary|incomplete chunked read|context summary|compression summary failed|auxiliary compression)"),
         "hindsight-daemon": re.compile(
-            r"(?i)(hindsight|daemon failed|failed to start daemon for profile|port 9712|batch_retain|large batch detected|"
+            r"(?i)(hindsight|daemon failed|failed to start daemon|Cannot start daemon|Cannot use HindsightEmbedded|port 9712|batch_retain|large batch detected|"
             r"ApiException\.from_response|ServiceException|HTTP response body: Internal Server Error|"
             r"Reason: Internal Server Error)"
         ),
         "model-api-transient": re.compile(r"(?i)(api call failed|timeout|timed out|connection error|internalservererror|http 503|payment / credit error|marking .* unhealthy)"),
-        "tool-error": re.compile(r"(?i)(tool .* returned error|tool_error|missing required parameter|pending_approval|patch validation failed|syntaxerror|py_compile|execute_code returned error)"),
+        "tool-error": re.compile(r"(?i)(tool .* returned error|tool_error|missing required parameter|pending_approval|patch validation failed|syntaxerror|importerror|runtimeerror|unclosed client session|unclosed connector|py_compile|execute_code returned error)"),
         "auth-oauth": re.compile(r"(?i)(oauth|unauthorized|forbidden|not_authenticated|credential|token)"),
     }
     structural_patterns = re.compile(r"(?i)^\s*(traceback \(most recent call last\):|file \"|raise\b|except exception as|logger\.debug|╰|╭|│|\[notice\])")
@@ -363,11 +365,22 @@ def hindsight_runtime_summary(embed_log: pathlib.Path, daemon_log: pathlib.Path)
     api_processes = _count_processes_containing("python -m hindsight_api.main --idle-timeout 300 --port 9712")
 
     recovery = hindsight_recovery_summary()
-    live_ok = api_listening is True and pg_listening is True and ollama_listening is True and api_health_ok is True and ollama_tags_ok is True
-    if logs["error_lines"] and (live_ok or recovery["recovered"]):
+    deps_ready = pg_listening is True and ollama_listening is True and ollama_tags_ok is True
+    api_active_ok = api_listening is True and api_health_ok is True
+    api_idle_ok = api_listening is False and api_processes == 0 and deps_ready
+    live_ok = deps_ready and (api_active_ok or api_idle_ok)
+    if logs["error_lines"] and live_ok:
         status = "ok"
-        classification = "live-healthy-stale-log-noise" if live_ok else "recovered-after-stale-errors"
-        summary = "Hindsight live/recovery smoke passes; remaining errors are stale log noise"
+        classification = "live-healthy-stale-log-noise" if api_active_ok else "on-demand-idle-stale-log-noise"
+        summary = "Hindsight dependencies are healthy; remaining errors are stale log noise"
+    elif logs["error_lines"] and recovery["recovered"]:
+        status = "ok"
+        classification = "recovered-after-stale-errors"
+        summary = "Hindsight recovery smoke passes; remaining errors are stale log noise"
+    elif live_ok:
+        status = "ok"
+        classification = "clean" if api_active_ok else "on-demand-idle"
+        summary = "Hindsight dependencies are ready; API daemon may be idle until the next recall/retain"
     elif large_batch:
         status = "warn"
         classification = "retain-backlog-degraded"
@@ -376,14 +389,10 @@ def hindsight_runtime_summary(embed_log: pathlib.Path, daemon_log: pathlib.Path)
         status = "warn"
         classification = "daemon-startup-flaky"
         summary = "Hindsight daemon startup is flaky"
-    elif logs["error_lines"] and live_ok:
-        status = "ok"
-        classification = "live-healthy-stale-log-noise"
-        summary = "Hindsight live smoke passes; remaining errors are stale log noise"
     elif logs["error_lines"]:
         status = "warn"
         classification = "historical-log-errors"
-        summary = "Hindsight has recent log errors and live health is incomplete"
+        summary = "Hindsight has recent log errors and live dependency health is incomplete"
     else:
         status = "ok"
         classification = "clean"
@@ -789,8 +798,11 @@ def kanban_readiness_summary(db_path: pathlib.Path = pathlib.Path("/Users/skylar
                 approval_needed.append(task_ref)
 
     active_total = sum(counts.values())
-    status = "fail" if not active_total else "warn" if stale or blocked_context else "ok"
+    critical_stale = [task for task in stale if task.get("status") == "running"]
+    status = "fail" if not active_total else "warn" if critical_stale or blocked_context else "ok"
     evidence = "statuses: " + ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
+    if stale and not critical_stale and not blocked_context:
+        evidence += f"; stale_backlog_tracked={len(stale)}"
     return {
         "status": status,
         "evidence": evidence,
@@ -813,6 +825,8 @@ def collect_morning_rounds(checks: list[Check], generated_at: str) -> dict[str, 
     current_priorities = SKYVAULT / "Palmer/projects/current-priorities.md"
     active_ledger = SKYVAULT / "Palmer/projects/active-work-ledger.md"
     kanban = kanban_readiness_summary()
+    approval_queue_age = note_updated_age_hours(SKYLAR_APPROVAL_QUEUE)
+    approval_queue_fresh = approval_queue_age is not None and approval_queue_age <= 36
 
     items: list[MorningItem] = [
         MorningItem(
@@ -843,11 +857,18 @@ def collect_morning_rounds(checks: list[Check], generated_at: str) -> dict[str, 
         ),
         MorningItem(
             gate="execution",
-            status="warn" if kanban["approval_needed"] else "ok",
+            status="ok" if not kanban["approval_needed"] or approval_queue_fresh else "warn",
             title="Approval-needed / Skylar-only queue",
-            summary=f"{len(kanban['approval_needed'])} active task(s) appear to need Skylar approval, decision, auth, send, purchase, payment, or scheduling action.",
-            evidence="; ".join(_task_line(t) for t in kanban["approval_needed"][:4]) or "No obvious approval queue from active Kanban rows.",
-            next_action="Batch these into one morning decision ask; do not leak them into agent busywork." if kanban["approval_needed"] else "No approval batch needed from this snapshot.",
+            summary=(
+                f"{len(kanban['approval_needed'])} Skylar-only item(s) are batched in a fresh approval queue."
+                if kanban["approval_needed"] and approval_queue_fresh
+                else f"{len(kanban['approval_needed'])} active task(s) appear to need Skylar approval, decision, auth, send, purchase, payment, or scheduling action."
+            ),
+            evidence=(
+                f"queue={SKYLAR_APPROVAL_QUEUE}; queue_age={age_label(approval_queue_age)}; "
+                + ("; ".join(_task_line(t) for t in kanban["approval_needed"][:4]) or "No obvious approval queue from active Kanban rows.")
+            ),
+            next_action="Use the batched approval queue; do not leak Skylar-only work into agent busywork." if kanban["approval_needed"] and approval_queue_fresh else "Batch these into one morning decision ask; do not leak them into agent busywork." if kanban["approval_needed"] else "No approval batch needed from this snapshot.",
         ),
     ]
 

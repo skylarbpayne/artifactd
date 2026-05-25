@@ -284,6 +284,26 @@ def test_hindsight_runtime_summary_quiets_stale_errors_when_live_smoke_passes(tm
     assert "samples:" not in summary["evidence"]
 
 
+def test_hindsight_runtime_summary_treats_on_demand_idle_daemon_as_ok(tmp_path, monkeypatch):
+    embed_log = tmp_path / "hindsight-embed.log"
+    daemon_log = tmp_path / "gateway.error.log"
+    embed_log.write_text("Large batch detected: batch_retain timed out yesterday\n", encoding="utf-8")
+    daemon_log.write_text("hindsight_client_api.exceptions.ServiceException: (500)\n", encoding="utf-8")
+
+    def fake_port(port):
+        return {9712: False, 5432: True, 11434: True}[port]
+
+    monkeypatch.setattr(ahd, "_has_listening_port", fake_port)
+    monkeypatch.setattr(ahd, "_curl_ok", lambda url: True if "11434" in url else False)
+    monkeypatch.setattr(ahd, "_count_processes_containing", lambda needle: 0)
+    monkeypatch.setattr(ahd, "hindsight_recovery_summary", lambda: {"recovered": False, "last_success": "", "last_failure": ""})
+
+    summary = hindsight_runtime_summary(embed_log, daemon_log)
+
+    assert summary["status"] == "ok"
+    assert summary["classification"] == "on-demand-idle-stale-log-noise"
+
+
 def test_hindsight_runtime_summary_warns_when_live_health_is_incomplete(tmp_path, monkeypatch):
     embed_log = tmp_path / "hindsight-embed.log"
     daemon_log = tmp_path / "gateway.error.log"
