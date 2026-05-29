@@ -184,6 +184,19 @@ artifactd workspaces register ./dist/my-dashboard \
 
 Multiple `--tag` values are normalized, deduped, shown as chips on Workspace Home, and filter with AND semantics when multiple tags are selected.
 
+## Safe tldraw card embeds
+
+`tldraw-licensed-canvas` supports a narrow embed surface for artifact cards, not full artifact iframes. Paste only canonical same-origin card URLs shaped like:
+
+```text
+https://<artifactd-host>/_embed/<slug>
+https://<artifactd-host>/_embed/<slug>?share=<token>
+```
+
+The server-rendered `/_embed/{slug}` route exposes metadata only: title, description, tags, status, updated time, and open/share affordances. It does not serve the Thing body. Profile-auth Things still require a workspace session cookie or a valid share token before the card renders; otherwise the route returns the normal locked page.
+
+The tldraw custom embed definition uses `CustomEmbedDefinition` with `EmbedShapeUtil.configure({ embedDefinitions })` and filters `DEFAULT_EMBED_DEFINITIONS` down to same-host definitions before adding the artifact card definition. This deliberately rejects YouTube/Google/Figma/etc. and any non-card artifact URL. Generic/full artifact iframes remain out of scope until separately approved with explicit per-Thing capability gates, CSP, sandbox rules, and a concrete abuse review.
+
 Useful metadata updates use the same underlying store. For a workspace profile, point `artifactd` at the workspace home:
 
 ```bash

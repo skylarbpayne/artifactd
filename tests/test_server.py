@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from artifactd import interactive
+from artifactd.embeds import canonical_artifact_card_path
 from artifactd.interactive import _validate_redirect_url
 from artifactd.server import create_app
 from artifactd.store import ArtifactStore
@@ -153,6 +154,77 @@ def test_protected_artifact_state_requires_workspace_login_or_share_token(tmp_pa
     assert shared.status_code == 200
     assert loaded.status_code == 200
     assert loaded.json()["snapshot"] == {"ok": True}
+
+
+def test_artifact_card_embed_url_canonicalization_allowlist():
+    allowed_hosts = {"artifacts.example.com", "localhost:8787"}
+
+    assert canonical_artifact_card_path("https://artifacts.example.com/_embed/spring-gala", allowed_hosts=allowed_hosts) == "/_embed/spring-gala"
+    assert canonical_artifact_card_path("https://artifacts.example.com/_embed/spring-gala?share=abc123", allowed_hosts=allowed_hosts) == "/_embed/spring-gala?share=abc123"
+    assert canonical_artifact_card_path("http://localhost:8787/_embed/canvas", allowed_hosts=allowed_hosts) == "/_embed/canvas"
+    assert canonical_artifact_card_path("/_embed/local-card", allowed_hosts=allowed_hosts) == "/_embed/local-card"
+
+    assert canonical_artifact_card_path("https://evil.example/_embed/spring-gala", allowed_hosts=allowed_hosts) is None
+    assert canonical_artifact_card_path("https://artifacts.example.com/spring-gala", allowed_hosts=allowed_hosts) is None
+    assert canonical_artifact_card_path("https://artifacts.example.com/_embed/spring-gala/extra", allowed_hosts=allowed_hosts) is None
+    assert canonical_artifact_card_path("https://artifacts.example.com/_embed/../secrets", allowed_hosts=allowed_hosts) is None
+    assert canonical_artifact_card_path("javascript:alert(1)", allowed_hosts=allowed_hosts) is None
+    assert canonical_artifact_card_path("https://artifacts.example.com/_embed/spring-gala?token=abc", allowed_hosts=allowed_hosts) is None
+
+
+def test_artifact_card_embed_route_renders_safe_metadata_and_requires_auth(tmp_path: Path):
+    source = tmp_path / "thing.html"
+    source.write_text("<h1>Thing body must not leak through card route</h1>", encoding="utf-8")
+    store = ArtifactStore(tmp_path / "home")
+    store.set_workspace_password("opensesame")
+    store.deploy(
+        source,
+        slug="public-thing",
+        title="Public Thing",
+        description="A safe public summary",
+        tags=["Review", "tldraw"],
+        auth_mode="public",
+    )
+    store.deploy(
+        source,
+        slug="protected-thing",
+        title="Protected Thing",
+        description="A safe protected summary",
+        tags=["private"],
+        auth_mode="profile",
+        requires_action=True,
+    )
+    token = store.create_share_override("protected-thing")
+    client = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret"))
+
+    public_card = client.get("/_embed/public-thing")
+    locked_card = client.get("/_embed/protected-thing")
+    shared_card = TestClient(create_app(tmp_path / "home", cookie_secret="test-secret")).get(f"/_embed/protected-thing?share={token}")
+    client.post("/protected-thing/login", data={"password": "opensesame"}, follow_redirects=False)
+    unlocked_card = client.get("/_embed/protected-thing")
+    missing_card = client.get("/_embed/not-there")
+    noncanonical_case = client.get("/_embed/Public-Thing")
+
+    assert public_card.status_code == 200
+    assert "artifactd-card-embed" in public_card.text
+    assert "Public Thing" in public_card.text
+    assert "A safe public summary" in public_card.text
+    assert "review" in public_card.text
+    assert "tldraw" in public_card.text
+    assert "Thing body must not leak" not in public_card.text
+    assert 'href="/public-thing"' in public_card.text
+    assert 'rel="canonical" href="/_embed/public-thing"' in public_card.text
+    assert public_card.headers["content-security-policy"].startswith("default-src 'none'")
+
+    assert locked_card.status_code == 401
+    assert shared_card.status_code == 200
+    assert "Protected Thing" in shared_card.text
+    assert unlocked_card.status_code == 200
+    assert "Requires action" in unlocked_card.text
+    assert "Protected" in unlocked_card.text
+    assert "Share from Workspace Home" in unlocked_card.text
+    assert missing_card.status_code == 404
+    assert noncanonical_case.status_code == 404
 
 
 def test_interactive_gog_endpoint_requires_workspace_password_and_scopes_palmer_accounts(tmp_path: Path):

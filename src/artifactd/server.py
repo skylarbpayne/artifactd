@@ -12,6 +12,7 @@ from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from .actions import CAPABILITY_REGISTRY, KanbanExecutor, register_action_routes
+from .embeds import canonical_artifact_card_path, is_canonical_artifact_card_slug
 from .interactive import register_interactive_routes
 from .security import sign_artifact_cookie, sign_csrf_token, verify_artifact_cookie, verify_csrf_token, verify_password
 from .state import register_state_routes
@@ -191,6 +192,31 @@ def create_app(
             return _workspace_login_response(secret, f"/{artifact.slug}")
         return _password_page(artifact, status_code=401, message="Wrong password")
 
+    @app.get("/_embed/{slug}", response_class=HTMLResponse)
+    async def artifact_card_embed(slug: str, request: Request) -> Response:
+        card_path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        if not is_canonical_artifact_card_slug(slug) or canonical_artifact_card_path(card_path, allowed_hosts=()) != card_path:
+            raise HTTPException(status_code=404, detail="artifact card not found")
+        artifact = store.get(slug)
+        if not artifact:
+            raise HTTPException(status_code=404, detail="artifact card not found")
+        session_cookie = _workspace_session_cookie(request, secret)
+        share_token = request.query_params.get("share")
+        if artifact.uses_profile_auth:
+            if not store.verify_share_token(artifact.slug, share_token) and not session_cookie:
+                return _password_page(artifact, status_code=401)
+        elif artifact.password_hash:
+            if not session_cookie:
+                return _password_page(artifact, status_code=401)
+        csrf_token = _workspace_csrf_token(session_cookie, secret)
+        return HTMLResponse(
+            _artifact_card_embed_page(artifact, request=request, csrf_token=csrf_token),
+            headers={
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'self'",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     register_action_routes(app, store, secret, kanban_executor=executor)
     register_interactive_routes(app, store, secret)
     register_state_routes(app, store, secret)
@@ -204,6 +230,75 @@ def create_app(
         return _serve_artifact(store, slug, relative_path, request, secret)
 
     return app
+
+
+def _artifact_card_embed_page(artifact: Artifact, *, request: Request, csrf_token: str = "") -> str:
+    slug = html.escape(artifact.slug, quote=True)
+    title = html.escape(artifact.title or artifact.slug)
+    description = html.escape(artifact.description or "No description yet.")
+    visibility = "Protected" if artifact.has_password or artifact.uses_profile_auth else "Public"
+    status_items = [visibility, artifact.status.capitalize()]
+    if artifact.requires_action:
+        status_items.append("Requires action")
+    if artifact.pinned:
+        status_items.append("Pinned")
+    if artifact.capabilities:
+        status_items.append(f"{len(artifact.capabilities)} action{'s' if len(artifact.capabilities) != 1 else ''}")
+    updated = datetime.fromtimestamp(int(artifact.updated_at), timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    tags_html = _tag_chip_html(artifact.tags)
+    share_token = request.query_params.get("share")
+    open_url = f"/{artifact.slug}" + (f"?{urlencode({'share': share_token})}" if share_token else "")
+    share_affordance = ""
+    if csrf_token:
+        share_affordance = '<a class="secondary" href="/" target="_blank" rel="noreferrer">Share from Workspace Home</a>'
+    elif share_token:
+        share_affordance = '<span class="fine">Opened with an expiring share link.</span>'
+    status_html = "".join(f"<span>{html.escape(item)}</span>" for item in status_items)
+    return f"""
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="robots" content="noindex">
+        <link rel="canonical" href="/_embed/{slug}">
+        <title>{title} · artifact card</title>
+        <style>
+          :root {{ color-scheme: dark; --bg:#0b1020; --panel:rgba(255,255,255,.08); --line:rgba(255,255,255,.15); --text:#eef2ff; --muted:#9aa7bd; --accent:#8b5cf6; }}
+          * {{ box-sizing:border-box; }}
+          html, body {{ margin:0; min-height:100%; background:transparent; }}
+          body {{ font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--text); }}
+          .artifactd-card-embed {{ min-height:100vh; padding:18px; display:grid; place-items:stretch; background:radial-gradient(circle at top left, rgba(139,92,246,.26), transparent 18rem), var(--bg); }}
+          article {{ border:1px solid var(--line); border-radius:24px; padding:22px; background:linear-gradient(180deg, rgba(255,255,255,.105), rgba(255,255,255,.055)); box-shadow:0 20px 60px rgba(0,0,0,.26); overflow:hidden; }}
+          .eyebrow {{ margin:0 0 10px; color:#c4b5fd; font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; font-weight:900; }}
+          h1 {{ margin:0; font-size:clamp(1.35rem, 6vw, 2.2rem); letter-spacing:-.04em; line-height:1; }}
+          p {{ color:var(--muted); line-height:1.5; overflow-wrap:anywhere; }}
+          .status, .tags, .actions {{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; }}
+          .status span, .tag-chip {{ border:1px solid var(--line); border-radius:999px; padding:6px 9px; background:rgba(255,255,255,.07); color:#dbeafe; font-size:.78rem; font-weight:800; }}
+          .tag-chip {{ background:rgba(59,130,246,.13); }}
+          .updated {{ margin:.75rem 0; font-size:.86rem; color:#cbd5e1; }}
+          a {{ color:white; text-decoration:none; }}
+          .button, .secondary {{ display:inline-flex; width:fit-content; border-radius:999px; padding:10px 13px; font-weight:850; }}
+          .button {{ background:var(--accent); }}
+          .secondary {{ border:1px solid var(--line); background:rgba(255,255,255,.08); }}
+          .fine {{ color:#cbd5e1; font-size:.86rem; }}
+        </style>
+      </head>
+      <body>
+        <main class="artifactd-card-embed" data-artifactd-card-embed data-slug="{slug}">
+          <article>
+            <p class="eyebrow">artifactd card</p>
+            <h1>{title}</h1>
+            <p>{description}</p>
+            <div class="status" aria-label="Thing status">{status_html}</div>
+            <p class="updated">Updated {html.escape(updated)}</p>
+            {tags_html}
+            <p class="actions"><a class="button" href="{html.escape(open_url, quote=True)}" target="_blank" rel="noreferrer">Open Thing</a>{share_affordance}</p>
+          </article>
+        </main>
+      </body>
+    </html>
+    """
 
 
 def _index_page(
